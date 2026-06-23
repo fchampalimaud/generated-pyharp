@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <RootNamespace>Common</RootNamespace>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <OutputPath>bin</OutputPath>
+  </PropertyGroup>
+  <PropertyGroup>
+    <CoreMetadata>..\core.yml</CoreMetadata>
+  </PropertyGroup>
+  <PropertyGroup>
+    <BasePath>..\src\harp-protocol\harp\protocol</BasePath>
+    <PythonInterfacePath>..\src\harp-serial\harp\serial</PythonInterfacePath>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- <PackageReference Include="Harp.Generators" Version="0.4.0" GeneratePathProperty="true" /> -->
+    <ProjectReference Include="../../../pyharp-reflex-generator/interface/Harp.Generators.csproj" GeneratePathProperty="true" />
+  </ItemGroup>
+  <Target Name="TextTransform" BeforeTargets="AfterBuild">
+    <PropertyGroup>
+      <PythonCoreFlags>-p:MetadataPath=$(CoreMetadata) -p:Namespace=$(RootNamespace) -P=$(TargetDir)</PythonCoreFlags>
+    </PropertyGroup>
+    <ItemGroup>
+      <TextTemplates Include="$(OutputPath)/*.tt" />
+    </ItemGroup>
+    <!-- base classes for the core device to be placed in pyharp -->
+    <Exec WorkingDirectory="$(ProjectDir)"
+          ConsoleToMSBuild="true"
+          Condition="Exists($(CoreMetadata)) And $([System.String]::new('%(TextTemplates.Identity)').EndsWith('device.tt'))"
+          Command="t4 %(TextTemplates.Identity) $(PythonCoreFlags) -o=$(PythonInterfacePath)/%(TextTemplates.Filename) -v" />
+    <!-- base classes for the core device to be placed in pyharp -->
+    <Exec WorkingDirectory="$(ProjectDir)"
+          ConsoleToMSBuild="true"
+          Condition="Exists($(CoreMetadata)) And $([System.String]::new('%(TextTemplates.Identity)').EndsWith('base.tt'))"
+          Command="t4 %(TextTemplates.Identity) $(PythonCoreFlags) -o=$(BasePath)/%(TextTemplates.Filename) -v" />
+    <!-- base classes for the core device to be placed in pyharp -->
+    <Exec WorkingDirectory="$(ProjectDir)"
+          ConsoleToMSBuild="true"
+          Condition="Exists($(CoreMetadata)) And $([System.String]::new('%(TextTemplates.Identity)').EndsWith('registers.tt'))"
+          Command="t4 %(TextTemplates.Identity) $(PythonCoreFlags) -o=$(BasePath)/%(TextTemplates.Filename) -v" />
+
+  </Target>
+</Project>
