@@ -12,7 +12,7 @@ from benchmark_common import (
     sanity_check,
 )
 
-SHOW_SAMPLE_OUTPUT = False
+SHOW_SAMPLE_OUTPUT = True
 
 RUNS = 20
 MIN_TIME = 0.5
@@ -59,6 +59,15 @@ def main() -> None:
 
     print("\n=== AnalogData benchmark (timeit) ===")
     print(f"  File  : {path.name}  ({size_mib:.1f} MiB)")
+    print(f"  Frames: {rows:,}  |  stride={stride} bytes")
+
+    # show summary for complex config payload
+    summary_complex = dataset_summary(path=path.parent / "complex_config_34.bin")
+    path = summary_complex["path"]
+    size_mib = summary_complex["size_mib"]
+    rows = summary_complex["rows"]
+    stride = summary_complex["stride"]
+    print(f"\n  File  : {path.name}  ({size_mib:.1f} MiB)")
     print(f"  Frames: {rows:,}  |  stride={stride} bytes")
 
     print("\nSanity check:")

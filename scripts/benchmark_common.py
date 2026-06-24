@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -9,15 +10,64 @@ import numpy as np
 import pandas as pd
 from harp.data import RegisterDump, ValidationMode, load_register_dump
 from harp.protocol import PayloadType
-from harp.protocol.registers import IRegister, RegisterAccess, RegisterSpec
+from harp.protocol.registers import IRegister, RegisterAccess, RegisterSpec, StructField
 
 CURRENT_DIR = Path(__file__).resolve().parent
 # NOTE: change this path to point to the actual dump file you want to benchmark (ours is ~123MB, ~2h session)
 DUMP_PATH = CURRENT_DIR / "data" / "behavior_44.bin"
+DUMP_PATH_COMPLEX = CURRENT_DIR / "data" / "complex_config_34.bin"
 
 LEGACY_HARP_IO_PATH = CURRENT_DIR / "_harp_io.py"
 
 VALIDATION = ValidationMode.HEADER
+
+
+# NOTE: Example for complex configuration based on the complex configuratione example in https://github.com/harp-tech/generators/pull/87
+# and added a string field to demonstrate string generation.
+@dataclass
+class ComplexConfigPayload:
+    pwm_port: int
+    duty_cycle: float
+    frequency: float
+    events_enabled: bool
+    delta: int
+    name: str
+
+
+class ComplexConfiguration(IRegister[ComplexConfigPayload]):
+    spec = RegisterSpec[ComplexConfigPayload](
+        address=34,
+        payload_type=PayloadType.U8,
+        decode=lambda p: ComplexConfigPayload(
+            pwm_port=p[0],
+            duty_cycle=struct.unpack_from("<f", bytes(p), 4)[0],
+            frequency=struct.unpack_from("<f", bytes(p), 8)[0],
+            events_enabled=p[12] != 0,
+            delta=int.from_bytes(bytes(p[13:17]), "little"),
+            name=bytes(p[17:50]).rstrip(b"\x00").decode("utf-8"),
+        ),
+        encode=lambda v: [
+            v.pwm_port,
+            0,
+            0,
+            0,
+            *struct.pack("<f", v.duty_cycle),
+            *struct.pack("<f", v.frequency),
+            1 if v.events_enabled else 0,
+            *v.delta.to_bytes(4, "little"),
+            *v.name.encode("utf-8").ljust(33, b"\x00"),
+        ],
+        count=50,
+        access=RegisterAccess.WRITABLE | RegisterAccess.EVENTFUL,
+        payload_struct=(
+            StructField("pwm_port", PayloadType.U8, offset=0),
+            StructField("duty_cycle", PayloadType.FLOAT, offset=4),
+            StructField("frequency", PayloadType.FLOAT, offset=8),
+            StructField("events_enabled", PayloadType.U8, offset=12),
+            StructField("delta", PayloadType.U32, offset=13),
+            StructField("name", PayloadType.U8, offset=17, length=33, is_string=True),
+        ),
+    )
 
 
 # NOTE: Defined here to avoid the generation of the Behavior device generation. This is what is currently generated.
@@ -58,7 +108,7 @@ class AnalogData(IRegister[AnalogDataPayload]):
 
 REGISTER = AnalogData
 PAYLOAD_TYPE = PayloadType.TIMESTAMPED_S16
-ANALOG_COLUMNS = ("analog_input0", "encoder", "analog_input1")
+ANALOG_COLUMNS = ("AnalogInput0", "Encoder", "AnalogInput1")
 
 
 @dataclass(frozen=True)
@@ -91,27 +141,40 @@ HARP_READ = _legacy_module.read
 # ---------------------------------------------------------------------------
 
 
-def harp_data_dump(path: Path) -> RegisterDump:
+def harp_data_dump(
+    path: Path,
+    register_cls: type[IRegister] = REGISTER,
+    payload_type: PayloadType = PAYLOAD_TYPE,
+) -> RegisterDump:
     return load_register_dump(
         path,
-        REGISTER,
-        PAYLOAD_TYPE,
+        register_cls,
+        payload_type,
         validation=VALIDATION,
     )
 
 
 def harp_data_dataframe(
     path: Path,
+    register_cls: type[IRegister] = REGISTER,
+    payload_type: PayloadType = PAYLOAD_TYPE,
     *,
     include_timestamp: bool,
     copy: bool = True,
 ) -> pd.DataFrame:
-    dump = harp_data_dump(path)
-    df = pd.DataFrame(
-        dump.payload_matrix,
-        columns=list(ANALOG_COLUMNS),
-        copy=copy,
-    )
+    dump = harp_data_dump(path, register_cls, payload_type)
+
+    if dump.payload_matrix.dtype.names is not None:
+        # Structured array — pandas reads column names from dtype fields
+        df = pd.DataFrame(dump.payload_matrix, copy=copy)
+    else:
+        # 2D homogeneous array — use field names from register spec
+        df = pd.DataFrame(
+            dump.payload_matrix,
+            columns=list(dump.column_names()),
+            copy=copy,
+        )
+
     if include_timestamp:
         df.insert(0, "timestamp", dump.timestamp_values("float"))
     return df
@@ -170,6 +233,19 @@ def print_sample_output(path: Path = DUMP_PATH) -> None:
     print(
         harp_data_dataframe(path, include_timestamp=True).head(3).to_string(index=False)
     )
+
+    if DUMP_PATH_COMPLEX.exists():
+        print("\nSample output (harp.data, complex config, first 3 rows):")
+        print(
+            harp_data_dataframe(
+                DUMP_PATH_COMPLEX,
+                ComplexConfiguration,
+                PayloadType.TIMESTAMPED_U8,
+                include_timestamp=True,
+            )
+            .head(3)
+            .to_string(index=False)
+        )
 
 
 def sanity_check(path: Path = DUMP_PATH) -> None:
@@ -255,6 +331,30 @@ def comparison_cases(path: Path = DUMP_PATH) -> list[BenchmarkCase]:
             baseline_name="harp_python_no_ts",
             run=lambda path=path: harp_data_dataframe(
                 path, include_timestamp=False, copy=True
+            ),
+        ),
+        BenchmarkCase(
+            name="harp_data_no_ts_no_copy_complex",
+            label="harp.data    load + DataFrame without timestamp (no copy) - complex",
+            baseline_name=None,
+            run=lambda path=DUMP_PATH_COMPLEX: harp_data_dataframe(
+                path,
+                ComplexConfiguration,
+                PayloadType.TIMESTAMPED_U8,
+                include_timestamp=False,
+                copy=False,
+            ),
+        ),
+        BenchmarkCase(
+            name="harp_data_no_ts_copy_complex",
+            label="harp.data    load + DataFrame without timestamp (copy) - complex",
+            baseline_name=None,
+            run=lambda path=DUMP_PATH_COMPLEX: harp_data_dataframe(
+                path,
+                ComplexConfiguration,
+                PayloadType.TIMESTAMPED_U8,
+                include_timestamp=False,
+                copy=True,
             ),
         ),
     ]
