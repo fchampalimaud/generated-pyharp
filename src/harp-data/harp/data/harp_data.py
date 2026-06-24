@@ -7,9 +7,8 @@ from pathlib import Path
 from typing import Literal, TypeVar
 
 import numpy as np
-
 from harp.protocol import PayloadType
-from harp.protocol.registers import IRegister, RegisterSpec
+from harp.protocol.registers import IRegister, RegisterSpec, StructField
 from harp.protocol.utils import PayloadTypeFlag
 
 T = TypeVar("T")
@@ -59,7 +58,11 @@ class TimestampView:
         else:
             np.copyto(out, self.seconds, casting="unsafe")
 
-        np.add(out, np.multiply(self.ticks, TIMESTAMP_TICK_SECONDS, dtype=np.float64), out=out)
+        np.add(
+            out,
+            np.multiply(self.ticks, TIMESTAMP_TICK_SECONDS, dtype=np.float64),
+            out=out,
+        )
         return out
 
 
@@ -75,15 +78,21 @@ class RegisterDump:
 
     @property
     def width(self) -> int:
+        if self.payload_matrix.dtype.names is not None:
+            return len(self.payload_matrix.dtype.names)
         return self.payload_matrix.shape[1]
 
     def column_names(self, *, prefix: str = "value") -> tuple[str, ...]:
         if self.field_names:
             if len(self.field_names) != self.width:
                 raise ValueError(
-                    f"Field count {len(self.field_names)} does not match payload width {self.width}."
+                    f"Field count {len(self.field_names)} does not match "
+                    f"payload width {self.width}."
                 )
             return self.field_names
+
+        if self.payload_matrix.dtype.names is not None:
+            return self.payload_matrix.dtype.names
 
         if self.width == 1:
             return ("value",)
@@ -91,6 +100,19 @@ class RegisterDump:
         return tuple(f"{prefix}_{index}" for index in range(self.width))
 
     def column(self, key: int | str) -> np.ndarray:
+        if self.payload_matrix.dtype.names is not None:
+            # Structured array — index by field name
+            if isinstance(key, int):
+                names = self.column_names()
+                if key < 0 or key >= len(names):
+                    raise IndexError(
+                        f"Payload column index {key} is out of bounds "
+                        f"for width {len(names)}."
+                    )
+                return self.payload_matrix[names[key]]
+            return self.payload_matrix[key]
+
+        # 2D uniform array - homogeneous payload
         if isinstance(key, str):
             names = self.column_names()
             try:
@@ -109,7 +131,7 @@ class RegisterDump:
 
     def payload_columns(self, *, prefix: str = "value") -> dict[str, np.ndarray]:
         names = self.column_names(prefix=prefix)
-        return {name: self.payload_matrix[:, index] for index, name in enumerate(names)}
+        return {name: self.column(name) for name in names}
 
     def timestamp_values(
         self,
@@ -170,6 +192,28 @@ class RegisterDump:
         )
 
 
+def _struct_field_format(field: StructField):
+    if field.is_string:
+        return f"S{field.byte_size}"
+    scalar = numpy_scalar_dtype(field.type)
+    element_count = field.byte_size // field.type.type_size()
+    if element_count > 1:
+        return (scalar, (element_count,))
+    return scalar
+
+
+def _build_struct_dtype(spec: RegisterSpec, payload_type: PayloadType) -> np.dtype:
+    payload_byte_size = spec.count * numpy_scalar_dtype(payload_type).itemsize
+    return np.dtype(
+        {
+            "names": [f.name for f in spec.payload_struct],
+            "formats": [_struct_field_format(f) for f in spec.payload_struct],
+            "offsets": [f.offset for f in spec.payload_struct],
+            "itemsize": payload_byte_size,
+        }
+    )
+
+
 def register_spec(register_cls: type[IRegister[T]]) -> RegisterSpec[T]:
     return register_cls.spec
 
@@ -177,10 +221,15 @@ def register_spec(register_cls: type[IRegister[T]]) -> RegisterSpec[T]:
 def register_field_names(register_cls: type[IRegister[T]]) -> tuple[str, ...]:
     spec = register_spec(register_cls)
 
+    # payload_struct supersedes fields
+    if spec.payload_struct is not None:
+        return tuple(f.name for f in spec.payload_struct)
+
     if spec.fields is not None:
         if len(spec.fields) != spec.count:
             raise ValueError(
-                f"{register_cls.__name__}: field count {len(spec.fields)} does not match payload count {spec.count}."
+                f"{register_cls.__name__}: field count {len(spec.fields)} "
+                f"does not match payload count {spec.count}."
             )
         return spec.fields
 
@@ -189,7 +238,8 @@ def register_field_names(register_cls: type[IRegister[T]]) -> tuple[str, ...]:
         names = tuple(field.name for field in fields(dtype))
         if len(names) != spec.count:
             raise ValueError(
-                f"{register_cls.__name__}: field count {len(names)} does not match payload count {spec.count}."
+                f"{register_cls.__name__}: field count {len(names)} "
+                f"does not match payload count {spec.count}."
             )
         return names
 
@@ -264,7 +314,6 @@ def build_frame_dtype(
     payload_type: PayloadType,
 ) -> np.dtype:
     spec = register_spec(register_cls)
-    item_dtype = numpy_scalar_dtype(payload_type)
 
     descr: list[tuple] = [
         ("message_type", "u1"),
@@ -282,7 +331,12 @@ def build_frame_dtype(
             ]
         )
 
-    descr.append(("payload", item_dtype, (spec.count,)))
+    if spec.payload_struct is not None:
+        descr.append(("payload", _build_struct_dtype(spec, payload_type)))
+    else:
+        item_dtype = numpy_scalar_dtype(payload_type)
+        descr.append(("payload", item_dtype, (spec.count,)))
+
     descr.append(("checksum", "u1"))
     return np.dtype(descr)
 
@@ -401,9 +455,7 @@ def load_register_dump(
             f"(truncated frame). Loading {complete_frames:,} complete frames.",
             stacklevel=2,
         )
-        records = np.memmap(
-            path, mode="r", dtype=frame_dtype, shape=(complete_frames,)
-        )
+        records = np.memmap(path, mode="r", dtype=frame_dtype, shape=(complete_frames,))
     else:
         records = np.memmap(path, mode="r", dtype=frame_dtype)
 
@@ -411,10 +463,17 @@ def load_register_dump(
     spec = register_spec(register_cls)
 
     if len(records) == 0:
-        scalar_dtype = numpy_scalar_dtype(actual_payload_type)
+        if spec.payload_struct is not None:
+            empty_payload = np.empty(
+                0, dtype=_build_struct_dtype(spec, actual_payload_type)
+            )
+        else:
+            scalar_dtype = numpy_scalar_dtype(actual_payload_type)
+            empty_payload = np.empty((0, spec.count), dtype=scalar_dtype)
+
         return RegisterDump(
             records=records,
-            payload_matrix=np.empty((0, spec.count), dtype=scalar_dtype),
+            payload_matrix=empty_payload,
             field_names=field_names,
             timestamp=TimestampView(
                 seconds=np.empty(0, dtype="<u4"),
@@ -441,7 +500,7 @@ def load_register_dump(
         validate_checksums(records, frame_dtype)
 
     payload_matrix = records["payload"]
-    if payload_matrix.ndim == 1:
+    if payload_matrix.ndim == 1 and spec.payload_struct is None:
         payload_matrix = payload_matrix.reshape(len(records), 1)
 
     timestamp = None
