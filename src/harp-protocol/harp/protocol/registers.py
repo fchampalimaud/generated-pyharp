@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import IntFlag, IntEnum
+from enum import IntEnum, IntFlag
 from typing import (
     Any,
     Callable,
@@ -12,14 +12,14 @@ from typing import (
 )
 
 from harp.protocol import (
-    HarpMessage,
-    MessageType,
-    PayloadType,
-    OperationMode,
-    ResetFlags,
-    OperationControlPayload,
     ClockConfigurationFlags,
     EnableFlag,
+    HarpMessage,
+    MessageType,
+    OperationControlPayload,
+    OperationMode,
+    PayloadType,
+    ResetFlags,
 )
 
 T = TypeVar("T")
@@ -56,6 +56,21 @@ class RegisterAccess(IntFlag):
 
 
 @dataclass(frozen=True)
+class StructField:
+    name: str
+    type: PayloadType
+    offset: int
+    length: int | None = None
+    is_string: bool = False
+
+    @property
+    def byte_size(self) -> int:
+        if self.length is not None:
+            return self.length
+        return self.type.type_size()
+
+
+@dataclass(frozen=True)
 class RegisterSpec(Generic[T]):
     address: int
     payload_type: PayloadType
@@ -64,6 +79,7 @@ class RegisterSpec(Generic[T]):
     count: int = 1
     access: RegisterAccess = RegisterAccess.READABLE
     fields: tuple[str, ...] | None = None
+    payload_struct: tuple[StructField, ...] | None = None
 
     def supports(self, message_type: MessageType) -> bool:
         if message_type == MessageType.READ:
@@ -79,6 +95,7 @@ class IRegister(Generic[T]):
     """
     Protocol defining the interface for a Harp register.
     """
+
     spec: ClassVar[RegisterSpec[T]]
 
     address: ClassVar[int]
@@ -89,7 +106,7 @@ class IRegister(Generic[T]):
         super().__init_subclass__()
         cls.address = cls.spec.address
         cls.payload_type = cls.spec.payload_type
-        cls.length = cls.spec.count   
+        cls.length = cls.spec.count
 
     @classmethod
     def format(
@@ -128,7 +145,7 @@ class IRegister(Generic[T]):
         timestamp: Optional[float] = None,
     ) -> HarpMessage:
         """Create a message with default payload values."""
-        return cls.format(payload, message_type, timestamp=timestamp)
+        return cls.format(value, message_type, timestamp=timestamp)
 
 
 class CommonRegisters(IntEnum):
@@ -293,8 +310,7 @@ class OperationControl(IRegister[OperationControlPayload]):
         | (0x10 if bool(value.MuteReplies) else 0)
         | (0x20 if bool(value.VisualIndicators) else 0)
         | (0x40 if bool(value.OperationLed) else 0)
-        | (0x80 if bool(value.Heartbeat) else 0)
-        ,
+        | (0x80 if bool(value.Heartbeat) else 0),
         access=RegisterAccess.WRITABLE,
         fields=(
             "OperationMode",
@@ -372,5 +388,3 @@ class ClockConfiguration(IRegister[ClockConfigurationFlags]):
         encode=lambda value: int(value),
         access=RegisterAccess.WRITABLE,
     )
-
-
