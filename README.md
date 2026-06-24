@@ -109,3 +109,21 @@ Ratios vs harp-python baseline:
   harp.data    load + DataFrame without timestamp (no copy)min=0.00x  mean=0.00x  (faster by 100% on mean)
   harp.data    load + DataFrame without timestamp (copy)min=0.36x  mean=0.36x  (faster by 64% on mean)
 ```
+
+## Complex registers
+
+A first attempt to support complex registers with heterogeneous payloads is available in the `harp-data` package. The `payload_struct` attribute of the `RegisterSpec` class allows defining a structured payload for registers that contain multiple fields of different types. 
+
+> [!WARNING]
+> There are clearly places where we can remove duplication (i.e., most likely it will be possible to define the `encode` and `decode` methods in the `RegisterSpec` class automatically.
+>
+> I believe that we can further improve it by also handling the homogeneous payloads using the same `StructField` defined here.
+
+We used the `ComplexConfiguration` register example on the information on <https://github.com/harp-tech/generators/pull/87> and added a string payload member to it. We tried to follow the definition available in <https://github.com/harp-tech/protocol/pull/215/>.
+
+> [!NOTE]
+> We didn't test it yet with arrays on payload members.
+
+To test it, we created a dump file generator script that creates a dump file with the `ComplexConfiguration` register and some frames. The script is available in the `scripts` folder as `generate_dump.py`. You can run it to generate a dump file for testing.
+
+Please check the script for more details on the arguments and usage. The default output file is `complex_config_34.bin` in the `scripts/data` folder, with a size of ~100MB, with 1.7 million messages. Timestamps are generated roughly to 1Khz frequency.
