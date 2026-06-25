@@ -1,6 +1,153 @@
+import pytest
 from harp.protocol import MessageType, PayloadType
+from harp.protocol.exceptions import HarpException
 from harp.protocol.message import HarpMessage
 from harp.protocol.registers import CommonRegisters
+
+
+# Validation error tests
+def test_invalid_frame_length_raises_value_error() -> None:
+    """Constructing a HarpMessage with mismatched length byte raises ValueError."""
+    frame = bytes([MessageType.READ, 5, 42, 255, PayloadType.U8, 123, 0, 0])
+    with pytest.raises(ValueError, match="expected to have"):
+        HarpMessage(frame)
+
+
+def test_invalid_checksum_raises_value_error() -> None:
+    """Constructing a HarpMessage with a bad checksum raises ValueError."""
+    frame = bytearray([MessageType.READ, 5, 42, 255, PayloadType.U8, 123, 0])
+    frame[-1] = (sum(frame[:-1]) & 255) ^ 0xFF  # deliberately wrong
+    with pytest.raises(ValueError, match="checksum"):
+        HarpMessage(bytes(frame))
+
+
+# Payload type mismatch tests
+def test_float_payload_with_int_type_raises() -> None:
+    """Passing a float value when payload type is integer raises HarpException."""
+    with pytest.raises(HarpException, match="int"):
+        HarpMessage.from_payload(
+            3.14,
+            message_type=MessageType.WRITE,
+            address=42,
+            payload_type=PayloadType.U8,
+        )
+
+
+def test_int_payload_with_float_type_raises() -> None:
+    """Passing an int value when payload type is FLOAT raises HarpException."""
+    with pytest.raises(HarpException, match="float"):
+        HarpMessage.from_payload(
+            42,
+            message_type=MessageType.WRITE,
+            address=42,
+            payload_type=PayloadType.FLOAT,
+        )
+
+
+def test_float_list_with_int_type_raises() -> None:
+    """Passing a list of floats when payload type is integer raises HarpException."""
+    with pytest.raises(HarpException, match="int"):
+        HarpMessage.from_payload(
+            [1.0, 2.0],
+            message_type=MessageType.WRITE,
+            address=42,
+            payload_type=PayloadType.U16,
+        )
+
+
+def test_int_list_with_float_type_raises() -> None:
+    """Passing a list of ints when payload type is FLOAT raises HarpException."""
+    with pytest.raises(HarpException, match="float"):
+        HarpMessage.from_payload(
+            [1, 2, 3],
+            message_type=MessageType.WRITE,
+            address=42,
+            payload_type=PayloadType.FLOAT,
+        )
+
+
+# Missing property / parameter tests
+def test_non_timestamped_message_timestamp_is_none() -> None:
+    """A message without a timestamp returns None for the timestamp property."""
+    frame = bytearray([MessageType.READ, 5, 42, 255, PayloadType.U8, 123, 0])
+    frame[-1] = sum(frame[:-1]) & 255
+    message = HarpMessage.from_bytes(bytes(frame))
+    assert message.timestamp is None
+
+
+def test_custom_port() -> None:
+    """The port parameter is correctly stored and retrievable."""
+    message = HarpMessage.from_payload(
+        42,
+        message_type=MessageType.WRITE,
+        address=10,
+        port=3,
+        payload_type=PayloadType.U8,
+    )
+    assert message.port == 3
+
+
+def test_payload_type_property() -> None:
+    """The payload_type property returns the correct PayloadType enum."""
+    message = HarpMessage.from_payload(
+        100,
+        message_type=MessageType.WRITE,
+        address=42,
+        payload_type=PayloadType.S16,
+    )
+    assert message.payload_type == PayloadType.S16
+
+
+def test_write_error_is_error() -> None:
+    """A WRITE_ERROR message reports is_error == True."""
+    frame = bytearray(
+        [
+            MessageType.WRITE_ERROR,
+            11,
+            42,
+            255,
+            PayloadType.TIMESTAMPED_U8,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ]
+    )
+    frame[-1] = sum(frame[:-1]) & 255
+    message = HarpMessage.from_bytes(bytes(frame))
+    assert message.is_error
+
+
+def test_event_message_type() -> None:
+    """An EVENT message can be created and parsed at the HarpMessage level."""
+    message = HarpMessage.from_payload(
+        99,
+        message_type=MessageType.EVENT,
+        address=44,
+        payload_type=PayloadType.U8,
+    )
+    assert message.message_type == MessageType.EVENT
+    assert message.payload == 99
+    assert not message.is_error
+
+
+def test_from_payload_with_timestamp() -> None:
+    """from_payload with a timestamp produces a timestamped message."""
+    message = HarpMessage.from_payload(
+        42,
+        message_type=MessageType.WRITE,
+        address=10,
+        payload_type=PayloadType.U8,
+        timestamp=100.5,
+    )
+    assert message.payload_type.has_timestamp()
+    assert message.timestamp is not None
+    assert message.payload == 42
+
 
 DEFAULT_ADDRESS = 42
 
