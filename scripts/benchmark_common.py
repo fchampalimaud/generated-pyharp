@@ -163,21 +163,8 @@ def harp_data_dataframe(
     copy: bool = True,
 ) -> pd.DataFrame:
     dump = harp_data_dump(path, register_cls, payload_type)
-
-    if dump.payload_matrix.dtype.names is not None:
-        # Structured array — pandas reads column names from dtype fields
-        df = pd.DataFrame(dump.payload_matrix, copy=copy)
-    else:
-        # 2D homogeneous array — use field names from register spec
-        df = pd.DataFrame(
-            dump.payload_matrix,
-            columns=list(dump.column_names()),
-            copy=copy,
-        )
-
-    if include_timestamp:
-        df.insert(0, "timestamp", dump.timestamp_values("float"))
-    return df
+    data = dump.columns(include_timestamp=include_timestamp, timestamp="float")
+    return pd.DataFrame(data, copy=copy)
 
 
 # ---------------------------------------------------------------------------
@@ -250,35 +237,33 @@ def print_sample_output(path: Path = DUMP_PATH) -> None:
 
 def sanity_check(path: Path = DUMP_PATH) -> None:
     legacy = harp_python_dataframe(path, include_timestamp=False)
-    harp_data = harp_data_dataframe(path, include_timestamp=False)
+    current = harp_data_dataframe(path, include_timestamp=False)
 
-    for label, df in [("harp.data", harp_data)]:
-        assert list(df.columns) == list(legacy.columns), (
-            f"column mismatch: harp-python={list(legacy.columns)!r}, {label}={list(df.columns)!r}"
+    assert list(current.columns) == list(legacy.columns), (
+        f"column mismatch: harp-python={list(legacy.columns)!r}, harp.data={list(current.columns)!r}"
+    )
+    assert len(current) == len(legacy), (
+        f"row count mismatch: harp-python={len(legacy)}, harp.data={len(current)}"
+    )
+    for column in ANALOG_COLUMNS:
+        np.testing.assert_array_equal(
+            legacy[column].to_numpy(),
+            current[column].to_numpy(),
+            err_msg=f"column {column!r} differs between harp-python and harp.data",
         )
-        assert len(df) == len(legacy), (
-            f"row count mismatch: harp-python={len(legacy)}, {label}={len(df)}"
-        )
-        for column in ANALOG_COLUMNS:
-            np.testing.assert_array_equal(
-                legacy[column].to_numpy(),
-                df[column].to_numpy(),
-                err_msg=f"column {column!r} differs between harp-python and {label}",
-            )
 
     legacy_ts = harp_python_dataframe(path, include_timestamp=True)
-    harp_data_ts = harp_data_dataframe(path, include_timestamp=True)
+    current_ts = harp_data_dataframe(path, include_timestamp=True)
 
-    for label, df in [("harp.data", harp_data_ts)]:
-        np.testing.assert_allclose(
-            legacy_ts["timestamp"].to_numpy(),
-            df["timestamp"].to_numpy(),
-            err_msg=f"timestamp column differs between harp-python and {label}",
-        )
+    np.testing.assert_allclose(
+        legacy_ts["timestamp"].to_numpy(),
+        current_ts["timestamp"].to_numpy(),
+        err_msg="timestamp column differs between harp-python and harp.data",
+    )
 
     print(
         f"  Sanity check passed: {len(legacy_ts):,} rows, "
-        f"payload columns and timestamps match across all implementations."
+        f"payload columns and timestamps match."
     )
 
 

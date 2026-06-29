@@ -57,18 +57,13 @@ def main() -> None:
 
     cases = comparison_cases()
 
-    print("\n=== AnalogData benchmark (timeit) ===")
+    print("\n=== harp.data benchmark (timeit) ===")
     print(f"  File  : {path.name}  ({size_mib:.1f} MiB)")
     print(f"  Frames: {rows:,}  |  stride={stride} bytes")
 
-    # show summary for complex config payload
     summary_complex = dataset_summary(path=path.parent / "complex_config_34.bin")
-    path = summary_complex["path"]
-    size_mib = summary_complex["size_mib"]
-    rows = summary_complex["rows"]
-    stride = summary_complex["stride"]
-    print(f"\n  File  : {path.name}  ({size_mib:.1f} MiB)")
-    print(f"  Frames: {rows:,}  |  stride={stride} bytes")
+    print(f"\n  File  : {summary_complex['path'].name}  ({summary_complex['size_mib']:.1f} MiB)")
+    print(f"  Frames: {summary_complex['rows']:,}  |  stride={summary_complex['stride']} bytes")
 
     print("\nSanity check:")
     sanity_check()
