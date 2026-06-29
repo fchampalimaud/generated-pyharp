@@ -174,7 +174,7 @@ class RegisterDump:
         return self.payload_matrix[:, index]
 
     def payload_columns(
-        self, *, prefix: str = "value", copy: bool = False
+        self, *, prefix: str = "value", copy: bool = True
     ) -> dict[str, np.ndarray]:
         names = self.column_names(prefix=prefix)
         if self.payload_matrix.dtype.names is not None and not self._column_cache:
@@ -230,7 +230,7 @@ class RegisterDump:
         include_timestamp: bool = False,
         timestamp: TimestampMode = "parts",
         prefix: str = "value",
-        copy: bool = False,
+        copy: bool = True,
     ) -> dict[str, np.ndarray]:
         columns = self.payload_columns(prefix=prefix, copy=copy)
 
