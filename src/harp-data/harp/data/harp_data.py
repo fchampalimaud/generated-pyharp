@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, is_dataclass
+import os
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field, fields, is_dataclass
 from enum import StrEnum
 from os import PathLike
 from pathlib import Path
@@ -66,12 +68,59 @@ class TimestampView:
         return out
 
 
+_MIN_BYTES_FOR_THREADING = 1_000_000
+
+
+def _extract_chunk_range(
+    raw: np.ndarray,
+    field_specs: list[tuple[int, int, np.ndarray]],
+    chunk_entries: int,
+    range_start: int,
+    range_end: int,
+) -> None:
+    for start in range(range_start, range_end, chunk_entries):
+        end = min(start + chunk_entries, range_end)
+        chunk = raw[start:end]
+        for col_start, byte_size, out_bytes in field_specs:
+            out_bytes[start:end] = chunk[:, col_start : col_start + byte_size]
+
+
+def _threaded_extract(
+    raw: np.ndarray,
+    field_specs: list[tuple[int, int, np.ndarray]],
+    chunk_entries: int,
+    n: int,
+) -> None:
+    total_bytes = raw.shape[0] * raw.shape[1]
+    num_workers = min(4, os.cpu_count() or 1)
+
+    if num_workers <= 1 or total_bytes < _MIN_BYTES_FOR_THREADING:
+        _extract_chunk_range(raw, field_specs, chunk_entries, 0, n)
+        return
+
+    per_worker = ((n + num_workers - 1) // num_workers // chunk_entries + 1) * chunk_entries
+    with ThreadPoolExecutor(max_workers=num_workers) as pool:
+        futures = []
+        for w in range(num_workers):
+            ws = w * per_worker
+            we = min(ws + per_worker, n)
+            if ws >= n:
+                break
+            futures.append(
+                pool.submit(_extract_chunk_range, raw, field_specs, chunk_entries, ws, we)
+            )
+        for f in futures:
+            f.result()
+
+
 @dataclass(frozen=True)
 class RegisterDump:
-    records: np.memmap
+    records: np.ndarray
     payload_matrix: np.ndarray
     field_names: tuple[str, ...]
     timestamp: TimestampView | None
+    _column_cache: dict[str, np.ndarray] = field(default_factory=dict, repr=False)
+    _raw_2d: np.ndarray | None = field(default=None, repr=False)
 
     def __len__(self) -> int:
         return len(self.records)
@@ -101,7 +150,6 @@ class RegisterDump:
 
     def column(self, key: int | str) -> np.ndarray:
         if self.payload_matrix.dtype.names is not None:
-            # Structured array — index by field name
             if isinstance(key, int):
                 names = self.column_names()
                 if key < 0 or key >= len(names):
@@ -109,8 +157,12 @@ class RegisterDump:
                         f"Payload column index {key} is out of bounds "
                         f"for width {len(names)}."
                     )
-                return self.payload_matrix[names[key]]
-            return self.payload_matrix[key]
+                key = names[key]
+            if key not in self._column_cache:
+                self._column_cache[key] = np.ascontiguousarray(
+                    self.payload_matrix[key]
+                )
+            return self._column_cache[key]
 
         # 2D uniform array - homogeneous payload
         if isinstance(key, str):
@@ -131,7 +183,34 @@ class RegisterDump:
 
     def payload_columns(self, *, prefix: str = "value") -> dict[str, np.ndarray]:
         names = self.column_names(prefix=prefix)
+        if self.payload_matrix.dtype.names is not None and not self._column_cache:
+            self._bulk_extract_columns()
         return {name: self.column(name) for name in names}
+
+    def _bulk_extract_columns(self) -> None:
+        n = len(self.records)
+        if n == 0:
+            return
+        frame_size = self.records.dtype.itemsize
+        payload_offset = self.records.dtype.fields["payload"][1]
+        payload_dtype = self.payload_matrix.dtype
+        if self._raw_2d is not None:
+            raw = self._raw_2d
+        else:
+            raw = self.records.view(np.uint8).reshape(n, frame_size)
+
+        field_specs: list[tuple[int, int, np.ndarray]] = []
+        for name in payload_dtype.names:
+            dt, offset = payload_dtype.fields[name][:2]
+            col_start = payload_offset + offset
+            byte_size = dt.itemsize
+            arr = np.empty(n, dtype=dt)
+            out_bytes = arr.view(np.uint8).reshape(n, byte_size)
+            self._column_cache[name] = arr
+            field_specs.append((col_start, byte_size, out_bytes))
+
+        chunk_entries = max(1, (8 * 1024 * 1024) // frame_size)
+        _threaded_extract(raw, field_specs, chunk_entries, n)
 
     def timestamp_values(
         self,
@@ -192,11 +271,11 @@ class RegisterDump:
         )
 
 
-def _struct_field_format(field: StructField):
-    if field.is_string:
-        return f"S{field.byte_size}"
-    scalar = numpy_scalar_dtype(field.type)
-    element_count = field.byte_size // field.type.type_size()
+def _struct_field_format(struct_field: StructField):
+    if struct_field.is_string:
+        return f"S{struct_field.byte_size}"
+    scalar = numpy_scalar_dtype(struct_field.type)
+    element_count = struct_field.byte_size // struct_field.type.type_size()
     if element_count > 1:
         return (scalar, (element_count,))
     return scalar
@@ -212,6 +291,7 @@ def _build_struct_dtype(spec: RegisterSpec, payload_type: PayloadType) -> np.dty
             "itemsize": payload_byte_size,
         }
     )
+
 
 
 def register_spec(register_cls: type[IRegister[T]]) -> RegisterSpec[T]:
@@ -391,7 +471,7 @@ def validate_dump_header(
 
 
 def validate_dump_records(
-    records: np.memmap,
+    records: np.ndarray,
     register_cls: type[IRegister[T]],
     payload_type: PayloadType,
     expected_length: int,
@@ -406,14 +486,9 @@ def validate_dump_records(
         raise ValueError("File contains mixed payload types.")
 
 
-def validate_checksums(records: np.memmap, frame_dtype: np.dtype) -> None:
+def validate_checksums(records: np.ndarray, frame_dtype: np.dtype) -> None:
     stride = frame_dtype.itemsize
-    filename = records.filename
-    if filename is None:
-        raise ValueError("Cannot validate checksums: memmap has no backing file.")
-    raw = np.memmap(filename, mode="r", dtype=np.uint8)
-    usable = len(records) * stride
-    frame_view = raw[:usable].reshape(len(records), stride)
+    frame_view = records.view(np.uint8).reshape(len(records), stride)
     expected = frame_view[:, :-1].sum(axis=1, dtype=np.uint8)
     actual = frame_view[:, -1]
     bad = np.nonzero(expected != actual)[0]
@@ -444,25 +519,25 @@ def load_register_dump(
     frame_dtype = build_frame_dtype(register_cls, actual_payload_type)
 
     file_size = path.stat().st_size
-    remainder = file_size % frame_dtype.itemsize
+    frame_size = frame_dtype.itemsize
+    remainder = file_size % frame_size
+    complete_frames = file_size // frame_size
+
     if remainder:
         import warnings
 
-        complete_frames = file_size // frame_dtype.itemsize
         warnings.warn(
             f"File size {file_size} is not a multiple of frame size "
-            f"{frame_dtype.itemsize}; last {remainder} bytes will be ignored "
+            f"{frame_size}; last {remainder} bytes will be ignored "
             f"(truncated frame). Loading {complete_frames:,} complete frames.",
             stacklevel=2,
         )
-        records = np.memmap(path, mode="r", dtype=frame_dtype, shape=(complete_frames,))
-    else:
-        records = np.memmap(path, mode="r", dtype=frame_dtype)
 
     field_names = register_field_names(register_cls)
     spec = register_spec(register_cls)
 
-    if len(records) == 0:
+    if complete_frames == 0:
+        records = np.empty(0, dtype=frame_dtype)
         if spec.payload_struct is not None:
             empty_payload = np.empty(
                 0, dtype=_build_struct_dtype(spec, actual_payload_type)
@@ -482,6 +557,10 @@ def load_register_dump(
             if actual_payload_type.has_timestamp()
             else None,
         )
+
+    raw_flat = np.fromfile(path, dtype=np.uint8, count=complete_frames * frame_size)
+    records = raw_flat.view(frame_dtype)
+    raw_2d = raw_flat.reshape(complete_frames, frame_size) if spec.payload_struct is not None else None
 
     if validation_mode is ValidationMode.ALL:
         validate_dump_records(
@@ -515,6 +594,7 @@ def load_register_dump(
         payload_matrix=payload_matrix,
         field_names=field_names,
         timestamp=timestamp,
+        _raw_2d=raw_2d,
     )
 
 
