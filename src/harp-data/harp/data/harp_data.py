@@ -71,18 +71,15 @@ class TimestampView:
 _MIN_BYTES_FOR_THREADING = 1_000_000
 
 
-def _extract_chunk_range(
+def _extract_chunk(
     raw: np.ndarray,
     field_specs: list[tuple[int, int, np.ndarray]],
-    chunk_entries: int,
-    range_start: int,
-    range_end: int,
+    start: int,
+    end: int,
 ) -> None:
-    for start in range(range_start, range_end, chunk_entries):
-        end = min(start + chunk_entries, range_end)
-        chunk = raw[start:end]
-        for col_start, byte_size, out_bytes in field_specs:
-            out_bytes[start:end] = chunk[:, col_start : col_start + byte_size]
+    chunk = raw[start:end]
+    for col_start, byte_size, out_bytes in field_specs:
+        out_bytes[start:end] = chunk[:, col_start : col_start + byte_size]
 
 
 def _threaded_extract(
@@ -92,23 +89,18 @@ def _threaded_extract(
     n: int,
 ) -> None:
     total_bytes = raw.shape[0] * raw.shape[1]
-    num_workers = min(4, os.cpu_count() or 1)
+    num_workers = min(6, os.cpu_count() or 1)
 
     if num_workers <= 1 or total_bytes < _MIN_BYTES_FOR_THREADING:
-        _extract_chunk_range(raw, field_specs, chunk_entries, 0, n)
+        for start in range(0, n, chunk_entries):
+            _extract_chunk(raw, field_specs, start, min(start + chunk_entries, n))
         return
 
-    per_worker = ((n + num_workers - 1) // num_workers // chunk_entries + 1) * chunk_entries
     with ThreadPoolExecutor(max_workers=num_workers) as pool:
-        futures = []
-        for w in range(num_workers):
-            ws = w * per_worker
-            we = min(ws + per_worker, n)
-            if ws >= n:
-                break
-            futures.append(
-                pool.submit(_extract_chunk_range, raw, field_specs, chunk_entries, ws, we)
-            )
+        futures = [
+            pool.submit(_extract_chunk, raw, field_specs, start, min(start + chunk_entries, n))
+            for start in range(0, n, chunk_entries)
+        ]
         for f in futures:
             f.result()
 
@@ -181,10 +173,14 @@ class RegisterDump:
 
         return self.payload_matrix[:, index]
 
-    def payload_columns(self, *, prefix: str = "value") -> dict[str, np.ndarray]:
+    def payload_columns(
+        self, *, prefix: str = "value", copy: bool = False
+    ) -> dict[str, np.ndarray]:
         names = self.column_names(prefix=prefix)
         if self.payload_matrix.dtype.names is not None and not self._column_cache:
             self._bulk_extract_columns()
+        if copy:
+            return {name: self.column(name).copy() for name in names}
         return {name: self.column(name) for name in names}
 
     def _bulk_extract_columns(self) -> None:
@@ -234,8 +230,9 @@ class RegisterDump:
         include_timestamp: bool = False,
         timestamp: TimestampMode = "parts",
         prefix: str = "value",
+        copy: bool = False,
     ) -> dict[str, np.ndarray]:
-        columns = self.payload_columns(prefix=prefix)
+        columns = self.payload_columns(prefix=prefix, copy=copy)
 
         if not include_timestamp:
             return columns
@@ -245,8 +242,8 @@ class RegisterDump:
 
         if timestamp == "parts":
             return {
-                "timestamp_seconds": self.timestamp.seconds,
-                "timestamp_ticks": self.timestamp.ticks,
+                "timestamp_seconds": self.timestamp.seconds.copy() if copy else self.timestamp.seconds,
+                "timestamp_ticks": self.timestamp.ticks.copy() if copy else self.timestamp.ticks,
                 **columns,
             }
         if timestamp == "float":
