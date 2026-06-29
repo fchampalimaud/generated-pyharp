@@ -163,8 +163,10 @@ def harp_data_dataframe(
     copy: bool = True,
 ) -> pd.DataFrame:
     dump = harp_data_dump(path, register_cls, payload_type)
-    data = dump.columns(include_timestamp=include_timestamp, timestamp="float")
-    return pd.DataFrame(data, copy=copy)
+    data = dump.columns(
+        include_timestamp=include_timestamp, timestamp="float", copy=copy
+    )
+    return pd.DataFrame(data, copy=False)
 
 
 # ---------------------------------------------------------------------------
