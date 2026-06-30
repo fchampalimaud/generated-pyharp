@@ -3,12 +3,16 @@
 Measures RegisterBase.format() and RegisterBase.parse() for each register
 pattern, reporting min/mean/max per operation in microseconds.
 
+Includes a "raw struct" baseline for patterns where the encode/decode work
+is dominated by struct.pack/unpack, so framework overhead is visible.
+
 Usage:
     uv run python scripts/benchmark_message.py
 """
 
 from __future__ import annotations
 
+import struct
 from dataclasses import dataclass
 from enum import IntEnum
 from statistics import mean, stdev
@@ -22,7 +26,6 @@ from harp.protocol import (
     ResetFlags,
 )
 from harp.protocol.registers import (
-    MaskPayload,
     OperationControlPayload,
     RegisterAccess,
     RegisterBase,
@@ -31,7 +34,6 @@ from harp.protocol.registers import (
     DeviceName,
     OperationControl,
     ResetDevice,
-    mask_field,
     payload_field,
 )
 
@@ -93,7 +95,59 @@ class StartPulseTrain(RegisterBase[StartPulseTrainPayload]):
 
 
 # ---------------------------------------------------------------------------
-# Benchmark payloads (pre-built so construction cost is excluded)
+# Raw struct baselines (no register framework, just struct.pack/unpack)
+# ---------------------------------------------------------------------------
+
+_ANALOG_FMT = "<3h"
+_ANALOG_PACKED = struct.pack(_ANALOG_FMT, 100, -200, 300)
+
+_PULSE_FMT = "<2H"
+_PULSE_PACKED = struct.pack(_PULSE_FMT, 200 | (2 << 10), 10 | (50 << 8))
+
+
+def _raw_analog_encode():
+    return struct.pack(_ANALOG_FMT, 100, -200, 300)
+
+
+def _raw_analog_decode():
+    return struct.unpack(_ANALOG_FMT, _ANALOG_PACKED)
+
+
+def _raw_complex_encode():
+    buf = bytearray(50)
+    struct.pack_into("<B", buf, 0, 3)
+    struct.pack_into("<f", buf, 4, 0.75)
+    struct.pack_into("<f", buf, 8, 1000.0)
+    struct.pack_into("<B", buf, 12, 1)
+    struct.pack_into("<I", buf, 13, 500)
+    buf[17:26] = b"benchmark"
+    return bytes(buf)
+
+
+_COMPLEX_RAW = _raw_complex_encode()
+
+
+def _raw_complex_decode():
+    pwm_port = struct.unpack_from("<B", _COMPLEX_RAW, 0)[0]
+    duty_cycle = struct.unpack_from("<f", _COMPLEX_RAW, 4)[0]
+    frequency = struct.unpack_from("<f", _COMPLEX_RAW, 8)[0]
+    events_enabled = struct.unpack_from("<B", _COMPLEX_RAW, 12)[0]
+    delta = struct.unpack_from("<I", _COMPLEX_RAW, 13)[0]
+    name = _COMPLEX_RAW[17:50].rstrip(b"\x00").decode("utf-8")
+    return (pwm_port, duty_cycle, frequency, events_enabled, delta, name)
+
+
+def _raw_pulse_encode():
+    return struct.pack(_PULSE_FMT, 200 | (2 << 10), 10 | (50 << 8))
+
+
+def _raw_pulse_decode():
+    w0, w1 = struct.unpack(_PULSE_FMT, _PULSE_PACKED)
+    return (w0 & 0x3FF, (w0 >> 10) & 0x3, w1 & 0xFF, (w1 >> 8) & 0xFF)
+
+
+# ---------------------------------------------------------------------------
+# Benchmark cases
 # ---------------------------------------------------------------------------
 
 CASES = [
@@ -102,12 +156,16 @@ CASES = [
         "register": WhoAmI,
         "value": 1234,
         "msg_type": MessageType.READ,
+        "raw_encode": None,
+        "raw_decode": None,
     },
     {
         "name": "IntFlag (ResetDevice U8)",
         "register": ResetDevice,
         "value": ResetFlags.RESTORE_DEFAULT | ResetFlags.SAVE,
         "msg_type": MessageType.WRITE,
+        "raw_encode": None,
+        "raw_decode": None,
     },
     {
         "name": "MaskPayload (OperationControl)",
@@ -121,12 +179,16 @@ CASES = [
             Heartbeat=EnableFlag.ENABLED,
         ),
         "msg_type": MessageType.WRITE,
+        "raw_encode": None,
+        "raw_decode": None,
     },
     {
         "name": "StructPayload homog (AnalogData S16x3)",
         "register": AnalogData,
         "value": AnalogDataPayload(AnalogInput0=100, Encoder=-200, AnalogInput1=300),
         "msg_type": MessageType.EVENT,
+        "raw_encode": _raw_analog_encode,
+        "raw_decode": _raw_analog_decode,
     },
     {
         "name": "StructPayload hetero (ComplexConfig)",
@@ -140,6 +202,8 @@ CASES = [
             name="benchmark",
         ),
         "msg_type": MessageType.WRITE,
+        "raw_encode": _raw_complex_encode,
+        "raw_decode": _raw_complex_decode,
     },
     {
         "name": "Masked struct (StartPulseTrain U16x2)",
@@ -151,12 +215,16 @@ CASES = [
             frequency=50,
         ),
         "msg_type": MessageType.WRITE,
+        "raw_encode": _raw_pulse_encode,
+        "raw_decode": _raw_pulse_decode,
     },
     {
         "name": "Raw bytes (DeviceName U8x25)",
         "register": DeviceName,
         "value": list(b"benchmark_device") + [0] * 9,
         "msg_type": MessageType.WRITE,
+        "raw_encode": None,
+        "raw_decode": None,
     },
 ]
 
@@ -166,11 +234,10 @@ CASES = [
 # ---------------------------------------------------------------------------
 
 REPEATS = 20
-NUMBER = 1000
 MIN_TIME = 0.1
 
 
-def _bench(fn, label: str) -> dict[str, float]:
+def _bench(fn) -> dict[str, float]:
     timer = Timer(fn)
     loops, total = timer.autorange()
     while total < MIN_TIME:
@@ -195,7 +262,10 @@ def main() -> None:
     print(f"  repeats={REPEATS}, auto-range with min_time={MIN_TIME}s")
     print()
 
-    header = f"{'Pattern':<42s} {'encode (us)':>11s} {'decode (us)':>11s} {'roundtrip (us)':>14s}"
+    header = (
+        f"{'Pattern':<42s} {'encode':>10s} {'decode':>10s} "
+        f"{'roundtrip':>10s} {'raw_struct':>10s} {'overhead':>8s}"
+    )
     print(header)
     print("-" * len(header))
 
@@ -204,23 +274,36 @@ def main() -> None:
         val = case["value"]
         msg_type = case["msg_type"]
 
-        # Pre-build the message for decode benchmarking
         if val is not None:
             msg = reg.format(val, msg_type)
         else:
             msg = reg.format(None, MessageType.READ)
 
-        encode_stats = _bench(lambda r=reg, v=val, mt=msg_type: r.format(v, mt), "encode")
-        decode_stats = _bench(lambda r=reg, m=msg: r.parse(m), "decode")
+        encode_stats = _bench(lambda r=reg, v=val, mt=msg_type: r.format(v, mt))
+        decode_stats = _bench(lambda r=reg, m=msg: r.parse(m))
 
         enc_us = encode_stats["min"] * 1e6
         dec_us = decode_stats["min"] * 1e6
         rt_us = enc_us + dec_us
 
-        print(f"  {case['name']:<40s} {enc_us:>10.2f} {dec_us:>10.2f} {rt_us:>13.2f}")
+        raw_str = ""
+        overhead_str = ""
+        if case["raw_encode"] is not None and case["raw_decode"] is not None:
+            raw_enc = _bench(case["raw_encode"])
+            raw_dec = _bench(case["raw_decode"])
+            raw_us = raw_enc["min"] * 1e6 + raw_dec["min"] * 1e6
+            raw_str = f"{raw_us:>9.2f}"
+            overhead_str = f"{rt_us / raw_us:>7.1f}x"
+
+        print(
+            f"  {case['name']:<40s} {enc_us:>9.2f} {dec_us:>9.2f} "
+            f"{rt_us:>9.2f} {raw_str:>10s} {overhead_str:>8s}"
+        )
 
     print()
-    print("All times are min-of-repeats in microseconds (lower is better).")
+    print("All times in microseconds (min-of-repeats, lower is better).")
+    print("raw_struct = bare struct.pack/unpack without register framework or message framing.")
+    print("overhead   = roundtrip / raw_struct.")
 
 
 if __name__ == "__main__":
