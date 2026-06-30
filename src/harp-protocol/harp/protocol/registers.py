@@ -366,15 +366,16 @@ class RegisterBase(Generic[T]):
 
         cls.length = cls.count
 
+        supported = {MessageType.READ}
+        if cls.access & RegisterAccess.WRITABLE:
+            supported.add(MessageType.WRITE)
+        if cls.access & RegisterAccess.EVENTFUL:
+            supported.add(MessageType.EVENT)
+        cls._supported_types = frozenset(supported)
+
     @classmethod
     def supports(cls, message_type: MessageType) -> bool:
-        if message_type == MessageType.READ:
-            return True
-        if message_type == MessageType.WRITE:
-            return cls.access.writable
-        if message_type == MessageType.EVENT:
-            return cls.access.eventful
-        return False
+        return message_type in cls._supported_types
 
     @classmethod
     def format(
