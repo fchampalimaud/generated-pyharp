@@ -188,9 +188,9 @@ class HarpMessage:
         timestamp: float | None = None,
     ) -> HarpMessage:
         if timestamp is None:
-            payload_type = PayloadType( payload_type & ~(PayloadTypeFlag.HAS_TIMESTAMP) )
+            payload_type = PayloadType(payload_type & ~(PayloadTypeFlag.HAS_TIMESTAMP))
         else:
-            payload_type = PayloadType( payload_type | PayloadTypeFlag.HAS_TIMESTAMP )
+            payload_type = PayloadType(payload_type | PayloadTypeFlag.HAS_TIMESTAMP)
 
         raw_timestamp = cls._get_raw_timestamp(timestamp)
         raw_payload = cls._get_raw_payload(payload_type, payload)
@@ -212,7 +212,12 @@ class HarpMessage:
             message_bytes[payload_index:-1] = raw_payload
         message_bytes[-1] = cls._calculate_checksum(bytes(message_bytes))
 
-        return HarpMessage(bytes(message_bytes))
+        msg = object.__new__(cls)
+        msg._bytes = bytes(message_bytes)
+        msg._payload = payload
+        msg._timestamp = timestamp
+
+        return msg
 
     def to_bytes(self) -> bytes:
         """
