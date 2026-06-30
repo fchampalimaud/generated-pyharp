@@ -4,9 +4,8 @@ from dataclasses import dataclass
 from harp.protocol import MessageType, PayloadType
 from harp.protocol.message import HarpMessage
 from harp.protocol.registers import (
-    IRegister,
     RegisterAccess,
-    RegisterSpec,
+    RegisterBase,
     StructField,
 )
 
@@ -24,39 +23,37 @@ class ComplexConfigPayload:
     name: str
 
 
-class ComplexConfiguration(IRegister[ComplexConfigPayload]):
-    spec = RegisterSpec[ComplexConfigPayload](
-        address=COMPLEX_CONFIG_ADDRESS,
-        payload_type=PayloadType.U8,
-        decode=lambda p: ComplexConfigPayload(
-            pwm_port=p[0],
-            duty_cycle=struct.unpack_from("<f", bytes(p), 4)[0],
-            frequency=struct.unpack_from("<f", bytes(p), 8)[0],
-            events_enabled=p[12] != 0,
-            delta=int.from_bytes(bytes(p[13:17]), "little"),
-            name=bytes(p[17:50]).rstrip(b"\x00").decode("utf-8"),
-        ),
-        encode=lambda v: [
-            v.pwm_port,
-            0,
-            0,
-            0,
-            *struct.pack("<f", v.duty_cycle),
-            *struct.pack("<f", v.frequency),
-            1 if v.events_enabled else 0,
-            *v.delta.to_bytes(4, "little"),
-            *v.name.encode("utf-8").ljust(33, b"\x00"),
-        ],
-        count=50,
-        access=RegisterAccess.WRITABLE | RegisterAccess.EVENTFUL,
-        payload_struct=(
-            StructField("pwm_port", PayloadType.U8, offset=0),
-            StructField("duty_cycle", PayloadType.FLOAT, offset=4),
-            StructField("frequency", PayloadType.FLOAT, offset=8),
-            StructField("events_enabled", PayloadType.U8, offset=12),
-            StructField("delta", PayloadType.U32, offset=13),
-            StructField("name", PayloadType.U8, offset=17, length=33, is_string=True),
-        ),
+class ComplexConfiguration(RegisterBase[ComplexConfigPayload]):
+    address = COMPLEX_CONFIG_ADDRESS
+    payload_type = PayloadType.U8
+    decode = lambda p: ComplexConfigPayload(
+        pwm_port=p[0],
+        duty_cycle=struct.unpack_from("<f", bytes(p), 4)[0],
+        frequency=struct.unpack_from("<f", bytes(p), 8)[0],
+        events_enabled=p[12] != 0,
+        delta=int.from_bytes(bytes(p[13:17]), "little"),
+        name=bytes(p[17:50]).rstrip(b"\x00").decode("utf-8"),
+    )
+    encode = lambda v: [
+        v.pwm_port,
+        0,
+        0,
+        0,
+        *struct.pack("<f", v.duty_cycle),
+        *struct.pack("<f", v.frequency),
+        1 if v.events_enabled else 0,
+        *v.delta.to_bytes(4, "little"),
+        *v.name.encode("utf-8").ljust(33, b"\x00"),
+    ]
+    count = 50
+    access = RegisterAccess.WRITABLE | RegisterAccess.EVENTFUL
+    payload_struct = (
+        StructField("pwm_port", PayloadType.U8, offset=0),
+        StructField("duty_cycle", PayloadType.FLOAT, offset=4),
+        StructField("frequency", PayloadType.FLOAT, offset=8),
+        StructField("events_enabled", PayloadType.U8, offset=12),
+        StructField("delta", PayloadType.U32, offset=13),
+        StructField("name", PayloadType.U8, offset=17, length=33, is_string=True),
     )
 
 
@@ -224,34 +221,32 @@ class ArrayStructPayload:
     gain: float
 
 
-class ArrayStructRegister(IRegister[ArrayStructPayload]):
-    spec = RegisterSpec[ArrayStructPayload](
-        address=ARRAY_STRUCT_ADDRESS,
-        payload_type=PayloadType.U8,
-        decode=lambda p: ArrayStructPayload(
-            channel=p[0],
-            samples=list(struct.unpack_from("<4h", bytes(p), 4)),
-            gain=struct.unpack_from("<f", bytes(p), 14)[0],
-        ),
-        encode=lambda v: [
-            v.channel,
-            0,
-            0,
-            0,
-            *struct.pack("<4h", *v.samples),
-            0,
-            0,
-            *struct.pack("<f", v.gain),
-            0,
-            0,
-        ],
-        count=ARRAY_STRUCT_COUNT,
-        access=RegisterAccess.WRITABLE | RegisterAccess.EVENTFUL,
-        payload_struct=(
-            StructField("channel", PayloadType.U8, offset=0),
-            StructField("samples", PayloadType.S16, offset=4, length=8),
-            StructField("gain", PayloadType.FLOAT, offset=14),
-        ),
+class ArrayStructRegister(RegisterBase[ArrayStructPayload]):
+    address = ARRAY_STRUCT_ADDRESS
+    payload_type = PayloadType.U8
+    decode = lambda p: ArrayStructPayload(
+        channel=p[0],
+        samples=list(struct.unpack_from("<4h", bytes(p), 4)),
+        gain=struct.unpack_from("<f", bytes(p), 14)[0],
+    )
+    encode = lambda v: [
+        v.channel,
+        0,
+        0,
+        0,
+        *struct.pack("<4h", *v.samples),
+        0,
+        0,
+        *struct.pack("<f", v.gain),
+        0,
+        0,
+    ]
+    count = ARRAY_STRUCT_COUNT
+    access = RegisterAccess.WRITABLE | RegisterAccess.EVENTFUL
+    payload_struct = (
+        StructField("channel", PayloadType.U8, offset=0),
+        StructField("samples", PayloadType.S16, offset=4, length=8),
+        StructField("gain", PayloadType.FLOAT, offset=14),
     )
 
 

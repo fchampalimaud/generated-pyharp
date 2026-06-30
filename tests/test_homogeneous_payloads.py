@@ -4,9 +4,8 @@ import pytest
 from harp.protocol import MessageType, PayloadType
 from harp.protocol.message import HarpMessage
 from harp.protocol.registers import (
-    IRegister,
     RegisterAccess,
-    RegisterSpec,
+    RegisterBase,
 )
 
 ANALOG_DATA_ADDRESS = 44
@@ -19,27 +18,25 @@ class AnalogDataPayload:
     AnalogInput1: int
 
 
-class AnalogData(IRegister[AnalogDataPayload]):
-    spec = RegisterSpec[AnalogDataPayload](
-        address=ANALOG_DATA_ADDRESS,
-        payload_type=PayloadType.S16,
-        decode=lambda payload: AnalogDataPayload(
-            AnalogInput0=payload[0],
-            Encoder=payload[1],
-            AnalogInput1=payload[2],
-        ),
-        encode=lambda value: [
-            value.AnalogInput0,
-            value.Encoder,
-            value.AnalogInput1,
-        ],
-        count=3,
-        access=RegisterAccess.EVENTFUL,
-        fields=(
-            "AnalogInput0",
-            "Encoder",
-            "AnalogInput1",
-        ),
+class AnalogData(RegisterBase[AnalogDataPayload]):
+    address = ANALOG_DATA_ADDRESS
+    payload_type = PayloadType.S16
+    decode = lambda payload: AnalogDataPayload(
+        AnalogInput0=payload[0],
+        Encoder=payload[1],
+        AnalogInput1=payload[2],
+    )
+    encode = lambda value: [
+        value.AnalogInput0,
+        value.Encoder,
+        value.AnalogInput1,
+    ]
+    count = 3
+    access = RegisterAccess.EVENTFUL
+    fields = (
+        "AnalogInput0",
+        "Encoder",
+        "AnalogInput1",
     )
 
 
@@ -143,12 +140,12 @@ def test_init_subclass_sets_class_attributes() -> None:
     assert AnalogData.length == 3
 
 
-def test_register_spec_supports() -> None:
-    """RegisterSpec.supports() reflects the access flags correctly."""
-    spec = AnalogData.spec
-    assert spec.supports(MessageType.READ) is True
-    assert spec.supports(MessageType.EVENT) is True
-    assert spec.supports(MessageType.WRITE) is False
+def test_register_supports() -> None:
+    """RegisterBase.supports() reflects the access flags correctly."""
+    register = AnalogData()
+    assert register.supports(MessageType.READ) is True
+    assert register.supports(MessageType.EVENT) is True
+    assert register.supports(MessageType.WRITE) is False
 
 
 def test_register_access_properties() -> None:
