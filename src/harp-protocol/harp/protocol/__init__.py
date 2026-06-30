@@ -4,13 +4,21 @@ from harp.protocol.base import (
     ClockConfigurationFlags,
     EnableFlag,
     MessageType,
-    OperationControlPayload,
     OperationMode,
     PayloadType,
     ResetFlags,
 )
 from harp.protocol.message import HarpMessage
-from harp.protocol.registers import RegisterBase, IRegister
+from harp.protocol.registers import (
+    IRegister,
+    MaskField,
+    MaskPayload,
+    OperationControlPayload,
+    RegisterBase,
+    StructPayload,
+    mask_field,
+    payload_field,
+)
 
 __all__ = [
     "PROTOCOL_VERSION",
@@ -25,4 +33,9 @@ __all__ = [
     "HarpMessage",
     "RegisterBase",
     "IRegister",
+    "StructPayload",
+    "MaskPayload",
+    "MaskField",
+    "payload_field",
+    "mask_field",
 ]
