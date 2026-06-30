@@ -462,117 +462,79 @@ class CommonRegisters(IntEnum):
 class WhoAmI(RegisterBase[int]):
     address = CommonRegisters.WHO_AM_I
     payload_type = PayloadType.U16
-    decode = int
-    encode = _id
 
 
 class HardwareVersionHigh(RegisterBase[int]):
     address = CommonRegisters.HARDWARE_VERSION_HIGH
     payload_type = PayloadType.U8
-    decode = int
-    encode = _id
 
 
 class HardwareVersionLow(RegisterBase[int]):
     address = CommonRegisters.HARDWARE_VERSION_LOW
     payload_type = PayloadType.U8
-    decode = int
-    encode = _id
 
 
 class AssemblyVersion(RegisterBase[int]):
     address = CommonRegisters.ASSEMBLY_VERSION
     payload_type = PayloadType.U8
-    decode = int
-    encode = _id
 
 
 class CoreVersionHigh(RegisterBase[int]):
     address = CommonRegisters.CORE_VERSION_HIGH
     payload_type = PayloadType.U8
-    decode = int
-    encode = _id
 
 
 class CoreVersionLow(RegisterBase[int]):
     address = CommonRegisters.CORE_VERSION_LOW
     payload_type = PayloadType.U8
-    decode = int
-    encode = _id
 
 
 class FirmwareVersionHigh(RegisterBase[int]):
     address = CommonRegisters.FIRMWARE_VERSION_HIGH
     payload_type = PayloadType.U8
-    decode = int
-    encode = _id
 
 
 class FirmwareVersionLow(RegisterBase[int]):
     address = CommonRegisters.FIRMWARE_VERSION_LOW
     payload_type = PayloadType.U8
-    decode = int
-    encode = _id
 
 
 class TimestampSeconds(RegisterBase[int]):
     address = CommonRegisters.TIMESTAMP_SECONDS
     payload_type = PayloadType.U32
-    decode = int
-    encode = _id
     access = RegisterAccess.WRITABLE | RegisterAccess.EVENTFUL
 
 
 class TimestampMicroseconds(RegisterBase[int]):
     address = CommonRegisters.TIMESTAMP_MICROSECONDS
     payload_type = PayloadType.U16
-    decode = int
-    encode = _id
+
+
+@dataclass
+class OperationControlPayload(MaskPayload):
+    OperationMode: OperationMode = mask_field(mask=0x3, type=OperationMode)
+    DumpRegisters: bool = mask_field(bit=3)
+    MuteReplies: bool = mask_field(bit=4)
+    VisualIndicators: EnableFlag = mask_field(bit=5, type=EnableFlag)
+    OperationLed: EnableFlag = mask_field(bit=6, type=EnableFlag)
+    Heartbeat: EnableFlag = mask_field(bit=7, type=EnableFlag)
 
 
 class OperationControl(RegisterBase[OperationControlPayload]):
     address = CommonRegisters.OPERATION_CONTROL
     payload_type = PayloadType.U8
-    decode = lambda payload: OperationControlPayload(
-        OperationMode=OperationMode(payload & 0x3),
-        DumpRegisters=bool((payload & 0x8) != 0),
-        MuteReplies=bool((payload & 0x10) != 0),
-        VisualIndicators=EnableFlag((payload & 0x20) != 0),
-        OperationLed=EnableFlag((payload & 0x40) != 0),
-        Heartbeat=EnableFlag((payload & 0x80) != 0),
-    )
-    encode = lambda value: (
-        (int(value.OperationMode) & 0x3)
-        | (0x8 if bool(value.DumpRegisters) else 0)
-        | (0x10 if bool(value.MuteReplies) else 0)
-        | (0x20 if bool(value.VisualIndicators) else 0)
-        | (0x40 if bool(value.OperationLed) else 0)
-        | (0x80 if bool(value.Heartbeat) else 0)
-    )
     access = RegisterAccess.WRITABLE
-    fields = (
-        "OperationMode",
-        "DumpRegisters",
-        "MuteReplies",
-        "VisualIndicators",
-        "OperationLed",
-        "Heartbeat",
-    )
 
 
 class ResetDevice(RegisterBase[ResetFlags]):
     address = CommonRegisters.RESET_DEVICE
     payload_type = PayloadType.U8
-    decode = lambda payload: ResetFlags(payload)
-    encode = lambda value: int(value)
     access = RegisterAccess.WRITABLE
 
 
 class DeviceName(RegisterBase[bytes]):
     address = CommonRegisters.DEVICE_NAME
     payload_type = PayloadType.U8
-    decode = _id
-    encode = _id
     count = 25
     access = RegisterAccess.WRITABLE
 
@@ -580,14 +542,10 @@ class DeviceName(RegisterBase[bytes]):
 class SerialNumber(RegisterBase[int]):
     address = CommonRegisters.SERIAL_NUMBER
     payload_type = PayloadType.U16
-    decode = int
-    encode = _id
     access = RegisterAccess.WRITABLE
 
 
 class ClockConfiguration(RegisterBase[ClockConfigurationFlags]):
     address = CommonRegisters.CLOCK_CONFIGURATION
     payload_type = PayloadType.U8
-    decode = lambda payload: ClockConfigurationFlags(payload)
-    encode = lambda value: int(value)
     access = RegisterAccess.WRITABLE

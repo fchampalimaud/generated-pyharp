@@ -1,5 +1,4 @@
 from datetime import datetime
-from dataclasses import dataclass
 from enum import IntEnum, IntFlag
 
 from harp.protocol.utils import MessageTypeFlag, PayloadTypeFlag
@@ -230,17 +229,3 @@ class EnableFlag(IntEnum):
     ENABLED = 1
 
 
-@dataclass
-class OperationControlPayload:
-    # Specifies the operation mode of the device.
-    OperationMode: OperationMode
-    # Specifies whether the device should report the content of all registers on initialization.
-    DumpRegisters: bool
-    # Specifies whether the replies to all commands will be muted, i.e. not sent by the device.
-    MuteReplies: bool
-    # Specifies the state of all visual indicators on the device.
-    VisualIndicators: EnableFlag
-    # Specifies whether the device state LED should report the operation mode of the device.
-    OperationLed: EnableFlag
-    # Specifies whether the device should report the content of the seconds register each second.
-    Heartbeat: EnableFlag
