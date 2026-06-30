@@ -335,3 +335,103 @@ def test_complex_config_gap_bytes_are_zero() -> None:
     message = ComplexConfiguration.format(original, MessageType.WRITE)
     payload_bytes = message.to_bytes()[5:-1]
     assert payload_bytes[1:4] == b"\x00\x00\x00"
+
+
+# ---------------------------------------------------------------------------
+# KitchenSink: every scalar PayloadType in one struct
+# ---------------------------------------------------------------------------
+
+KITCHEN_SINK_ADDRESS = 70
+
+
+@dataclass
+class KitchenSinkPayload(StructPayload):
+    a_u8: int = payload_field(PayloadType.U8, offset=0)
+    a_s16: int = payload_field(PayloadType.S16, offset=2)
+    a_u32: int = payload_field(PayloadType.U32, offset=4)
+    a_float: float = payload_field(PayloadType.FLOAT, offset=8)
+    a_s32: int = payload_field(PayloadType.S32, offset=12)
+
+
+class KitchenSink(RegisterBase[KitchenSinkPayload]):
+    address = KITCHEN_SINK_ADDRESS
+    access = RegisterAccess.WRITABLE | RegisterAccess.EVENTFUL
+
+
+def test_kitchen_sink_roundtrip() -> None:
+    original = KitchenSinkPayload(
+        a_u8=42,
+        a_s16=-1000,
+        a_u32=123456789,
+        a_float=3.14,
+        a_s32=-987654321,
+    )
+    message = KitchenSink.format(original, MessageType.WRITE)
+    decoded = KitchenSink.parse(message)
+
+    assert decoded.a_u8 == original.a_u8
+    assert decoded.a_s16 == original.a_s16
+    assert decoded.a_u32 == original.a_u32
+    assert abs(decoded.a_float - original.a_float) < 1e-6
+    assert decoded.a_s32 == original.a_s32
+
+
+def test_kitchen_sink_boundary_values() -> None:
+    original = KitchenSinkPayload(
+        a_u8=255,
+        a_s16=-32768,
+        a_u32=2**32 - 1,
+        a_float=0.0,
+        a_s32=-(2**31),
+    )
+    message = KitchenSink.format(original, MessageType.WRITE)
+    decoded = KitchenSink.parse(message)
+
+    assert decoded.a_u8 == 255
+    assert decoded.a_s16 == -32768
+    assert decoded.a_u32 == 2**32 - 1
+    assert decoded.a_float == 0.0
+    assert decoded.a_s32 == -(2**31)
+
+
+def test_kitchen_sink_max_positive_values() -> None:
+    original = KitchenSinkPayload(
+        a_u8=0,
+        a_s16=32767,
+        a_u32=0,
+        a_float=1e30,
+        a_s32=2**31 - 1,
+    )
+    message = KitchenSink.format(original, MessageType.WRITE)
+    decoded = KitchenSink.parse(message)
+
+    assert decoded.a_u8 == 0
+    assert decoded.a_s16 == 32767
+    assert decoded.a_u32 == 0
+    assert abs(decoded.a_float - 1e30) / 1e30 < 1e-6
+    assert decoded.a_s32 == 2**31 - 1
+
+
+def test_kitchen_sink_from_bytes_roundtrip() -> None:
+    original = KitchenSinkPayload(
+        a_u8=1,
+        a_s16=-1,
+        a_u32=1,
+        a_float=-0.5,
+        a_s32=-1,
+    )
+    message = KitchenSink.format(original, MessageType.WRITE)
+    reconstructed = HarpMessage.from_bytes(message.to_bytes())
+    decoded = KitchenSink.parse(reconstructed)
+
+    assert decoded.a_u8 == original.a_u8
+    assert decoded.a_s16 == original.a_s16
+    assert decoded.a_u32 == original.a_u32
+    assert abs(decoded.a_float - original.a_float) < 1e-6
+    assert decoded.a_s32 == original.a_s32
+
+
+def test_kitchen_sink_byte_count() -> None:
+    assert KitchenSinkPayload.__byte_count__ == 16
+    assert KitchenSink.count == 16
+    assert KitchenSink.payload_type == PayloadType.U8

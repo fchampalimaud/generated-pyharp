@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import IntEnum
+
 import pytest
 from harp.protocol import (
     MessageType,
@@ -9,6 +12,8 @@ from harp.protocol import (
     EnableFlag,
     ResetFlags,
     ClockConfigurationFlags,
+    MaskPayload,
+    mask_field,
 )
 from harp.protocol.registers import (
     RegisterBase,
@@ -250,3 +255,193 @@ class TestCustomRegister:
 
         msg = MyRegister.format(42, MessageType.WRITE)
         assert MyRegister.parse(msg) == 42
+
+
+# ---------------------------------------------------------------------------
+# Bitmask splitter: two numeric masks on one byte
+# ---------------------------------------------------------------------------
+
+
+class Motor(IntEnum):
+    OFF = 0
+    LOW = 1
+    HIGH = 2
+    TURBO = 3
+
+
+@dataclass
+class NibbleSplitPayload(MaskPayload):
+    low: int = mask_field(mask=0x0F, type=int)
+    high: int = mask_field(mask=0xF0, type=int)
+
+
+class NibbleSplitReg(RegisterBase[NibbleSplitPayload]):
+    address = 200
+    payload_type = PayloadType.U8
+    access = RegisterAccess.WRITABLE
+
+
+class TestBitmaskSplitter:
+    def test_roundtrip(self):
+        payload = NibbleSplitPayload(low=0xA, high=0x5)
+        msg = NibbleSplitReg.format(payload, MessageType.WRITE)
+        result = NibbleSplitReg.parse(msg)
+        assert result.low == 0xA
+        assert result.high == 0x5
+
+    def test_encoded_byte(self):
+        payload = NibbleSplitPayload(low=0xA, high=0x5)
+        encoded = NibbleSplitReg.encode(payload)
+        assert encoded == 0x5A
+
+    def test_boundary_values(self):
+        for low in (0x0, 0xF):
+            for high in (0x0, 0xF):
+                payload = NibbleSplitPayload(low=low, high=high)
+                msg = NibbleSplitReg.format(payload, MessageType.WRITE)
+                result = NibbleSplitReg.parse(msg)
+                assert result.low == low
+                assert result.high == high
+
+    def test_fields_attribute(self):
+        assert NibbleSplitReg.fields == ("low", "high")
+
+
+# ---------------------------------------------------------------------------
+# GroupMask: multi-bit enum + bool fields from mask
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class MotorControlPayload(MaskPayload):
+    motor: Motor = mask_field(mask=0x03, type=Motor)
+    enabled: bool = mask_field(bit=2)
+    direction: bool = mask_field(bit=3)
+
+
+class MotorControlReg(RegisterBase[MotorControlPayload]):
+    address = 201
+    payload_type = PayloadType.U8
+    access = RegisterAccess.WRITABLE
+
+
+class TestGroupMask:
+    def test_roundtrip_each_enum_value(self):
+        for motor_val in Motor:
+            payload = MotorControlPayload(
+                motor=motor_val, enabled=True, direction=False
+            )
+            msg = MotorControlReg.format(payload, MessageType.WRITE)
+            result = MotorControlReg.parse(msg)
+            assert result.motor == motor_val
+            assert isinstance(result.motor, Motor)
+            assert result.enabled is True
+            assert result.direction is False
+
+    def test_all_fields_independently_addressable(self):
+        payload = MotorControlPayload(
+            motor=Motor.TURBO, enabled=False, direction=True
+        )
+        msg = MotorControlReg.format(payload, MessageType.WRITE)
+        result = MotorControlReg.parse(msg)
+        assert result.motor == Motor.TURBO
+        assert result.enabled is False
+        assert result.direction is True
+
+    def test_encoded_bits(self):
+        payload = MotorControlPayload(
+            motor=Motor.HIGH, enabled=True, direction=True
+        )
+        encoded = MotorControlReg.encode(payload)
+        # Motor.HIGH=2 in bits 0-1, enabled=1 in bit 2, direction=1 in bit 3
+        assert encoded == 0b1110
+
+    def test_fields_attribute(self):
+        assert MotorControlReg.fields == ("motor", "enabled", "direction")
+
+
+# ---------------------------------------------------------------------------
+# IntEnum auto-derivation
+# ---------------------------------------------------------------------------
+
+
+class Mode(IntEnum):
+    STANDBY = 0
+    ACTIVE = 1
+    FAST = 2
+
+
+class ModeReg(RegisterBase[Mode]):
+    address = 202
+    payload_type = PayloadType.U8
+    access = RegisterAccess.WRITABLE
+
+
+class TestIntEnumAutoDerive:
+    def test_roundtrip_each_value(self):
+        for mode in Mode:
+            msg = ModeReg.format(mode, MessageType.WRITE)
+            result = ModeReg.parse(msg)
+            assert result == mode
+            assert isinstance(result, Mode)
+
+    def test_decode_is_auto_derived(self):
+        assert ModeReg.decode is not None
+        assert ModeReg.encode is not None
+
+
+# ---------------------------------------------------------------------------
+# float auto-derivation
+# ---------------------------------------------------------------------------
+
+
+class FloatReg(RegisterBase[float]):
+    address = 203
+    payload_type = PayloadType.FLOAT
+    access = RegisterAccess.WRITABLE
+
+
+class TestFloatAutoDerive:
+    def test_roundtrip(self):
+        for val in (0.0, 1.5, -3.14):
+            msg = FloatReg.format(val, MessageType.WRITE)
+            result = FloatReg.parse(msg)
+            assert abs(result - val) < 1e-6
+
+    def test_decode_is_auto_derived(self):
+        assert FloatReg.decode is float
+
+
+# ---------------------------------------------------------------------------
+# MaskPayload default values
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ConfigWithDefaults(MaskPayload):
+    motor: Motor = mask_field(mask=0x03, type=Motor)
+    enabled: bool = mask_field(bit=7)
+
+
+class ConfigDefaultsReg(RegisterBase[ConfigWithDefaults]):
+    address = 204
+    payload_type = PayloadType.U8
+    access = RegisterAccess.WRITABLE
+
+
+class TestMaskPayloadDefaults:
+    def test_decode_encodes_back(self):
+        payload = ConfigWithDefaults(motor=Motor.LOW, enabled=True)
+        msg = ConfigDefaultsReg.format(payload, MessageType.WRITE)
+        result = ConfigDefaultsReg.parse(msg)
+        assert result.motor == Motor.LOW
+        assert result.enabled is True
+
+    def test_all_combinations(self):
+        for motor_val in Motor:
+            for enabled in (True, False):
+                payload = ConfigWithDefaults(motor=motor_val, enabled=enabled)
+                msg = ConfigDefaultsReg.format(payload, MessageType.WRITE)
+                result = ConfigDefaultsReg.parse(msg)
+                assert result.motor == motor_val
+                assert result.enabled is enabled
