@@ -79,12 +79,20 @@ class StructField:
     offset: int
     length: int | None = None
     is_string: bool = False
+    mask: int | None = None
+    mask_type: type | None = None
 
     @property
     def byte_size(self) -> int:
         if self.length is not None:
             return self.length
         return self.type.type_size()
+
+    @property
+    def shift(self) -> int:
+        if self.mask is None:
+            return 0
+        return (self.mask & -self.mask).bit_length() - 1
 
 
 def payload_field(
@@ -93,6 +101,8 @@ def payload_field(
     *,
     length: int | None = None,
     is_string: bool = False,
+    mask: int | None = None,
+    type: type | None = None,
 ) -> Any:
     return StructField(
         name="",
@@ -100,6 +110,8 @@ def payload_field(
         offset=offset,
         length=length,
         is_string=is_string,
+        mask=mask,
+        mask_type=type,
     )
 
 
@@ -125,6 +137,8 @@ class StructPayload:
                     offset=sf.offset,
                     length=sf.length,
                     is_string=sf.is_string,
+                    mask=sf.mask,
+                    mask_type=sf.mask_type,
                 )
                 for name, sf in inline
             )
@@ -161,9 +175,14 @@ class StructPayload:
                     )
                 )
             else:
-                kwargs[f.name] = struct.unpack_from(
+                val = struct.unpack_from(
                     f"<{_STRUCT_CHARS[f.type]}", data, f.offset
                 )[0]
+                if f.mask is not None:
+                    val = (val & f.mask) >> f.shift
+                    if f.mask_type is not None:
+                        val = bool(val) if f.mask_type is bool else f.mask_type(val)
+                kwargs[f.name] = val
         return cls(**kwargs)
 
     @classmethod
@@ -176,7 +195,12 @@ class StructPayload:
                 n = f.length // ts
                 kwargs[f.name] = list(raw_payload[idx : idx + n])
             else:
-                kwargs[f.name] = raw_payload[idx]
+                val = raw_payload[idx]
+                if f.mask is not None:
+                    val = (val & f.mask) >> f.shift
+                    if f.mask_type is not None:
+                        val = bool(val) if f.mask_type is bool else f.mask_type(val)
+                kwargs[f.name] = val
         return cls(**kwargs)
 
     def _encode_bytes(self) -> list:
@@ -191,6 +215,11 @@ class StructPayload:
                 struct.pack_into(
                     f"<{n}{_STRUCT_CHARS[f.type]}", buf, f.offset, *val
                 )
+            elif f.mask is not None:
+                fmt = f"<{_STRUCT_CHARS[f.type]}"
+                current = struct.unpack_from(fmt, buf, f.offset)[0]
+                current |= (int(val) << f.shift) & f.mask
+                struct.pack_into(fmt, buf, f.offset, current)
             else:
                 struct.pack_into(
                     f"<{_STRUCT_CHARS[f.type]}",
@@ -210,12 +239,16 @@ class StructPayload:
             if f.length is not None:
                 n = f.length // ts
                 result[idx : idx + n] = list(val)
+            elif f.mask is not None:
+                result[idx] |= (int(val) << f.shift) & f.mask
             else:
                 result[idx] = val
         return result
 
     @classmethod
     def decode(cls, raw_payload):
+        if isinstance(raw_payload, int):
+            raw_payload = [raw_payload]
         if cls.__base_type__.type_size() == 1:
             return cls._decode_bytes(raw_payload)
         return cls._decode_values(raw_payload)
