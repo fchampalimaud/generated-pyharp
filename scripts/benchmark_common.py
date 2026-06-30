@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 from harp.data import RegisterDump, ValidationMode, load_register_dump
 from harp.protocol import PayloadType
-from harp.protocol.registers import IRegister, RegisterAccess, RegisterSpec, StructField
+from harp.protocol.registers import RegisterBase, RegisterAccess, StructField
 
 CURRENT_DIR = Path(__file__).resolve().parent
 # NOTE: change this path to point to the actual dump file you want to benchmark (ours is ~123MB, ~2h session)
@@ -34,39 +34,37 @@ class ComplexConfigPayload:
     name: str
 
 
-class ComplexConfiguration(IRegister[ComplexConfigPayload]):
-    spec = RegisterSpec[ComplexConfigPayload](
-        address=34,
-        payload_type=PayloadType.U8,
-        decode=lambda p: ComplexConfigPayload(
-            pwm_port=p[0],
-            duty_cycle=struct.unpack_from("<f", bytes(p), 4)[0],
-            frequency=struct.unpack_from("<f", bytes(p), 8)[0],
-            events_enabled=p[12] != 0,
-            delta=int.from_bytes(bytes(p[13:17]), "little"),
-            name=bytes(p[17:50]).rstrip(b"\x00").decode("utf-8"),
-        ),
-        encode=lambda v: [
-            v.pwm_port,
-            0,
-            0,
-            0,
-            *struct.pack("<f", v.duty_cycle),
-            *struct.pack("<f", v.frequency),
-            1 if v.events_enabled else 0,
-            *v.delta.to_bytes(4, "little"),
-            *v.name.encode("utf-8").ljust(33, b"\x00"),
-        ],
-        count=50,
-        access=RegisterAccess.WRITABLE | RegisterAccess.EVENTFUL,
-        payload_struct=(
-            StructField("pwm_port", PayloadType.U8, offset=0),
-            StructField("duty_cycle", PayloadType.FLOAT, offset=4),
-            StructField("frequency", PayloadType.FLOAT, offset=8),
-            StructField("events_enabled", PayloadType.U8, offset=12),
-            StructField("delta", PayloadType.U32, offset=13),
-            StructField("name", PayloadType.U8, offset=17, length=33, is_string=True),
-        ),
+class ComplexConfiguration(RegisterBase[ComplexConfigPayload]):
+    address = 34
+    payload_type = PayloadType.U8
+    decode = lambda p: ComplexConfigPayload(
+        pwm_port=p[0],
+        duty_cycle=struct.unpack_from("<f", bytes(p), 4)[0],
+        frequency=struct.unpack_from("<f", bytes(p), 8)[0],
+        events_enabled=p[12] != 0,
+        delta=int.from_bytes(bytes(p[13:17]), "little"),
+        name=bytes(p[17:50]).rstrip(b"\x00").decode("utf-8"),
+    )
+    encode = lambda v: [
+        v.pwm_port,
+        0,
+        0,
+        0,
+        *struct.pack("<f", v.duty_cycle),
+        *struct.pack("<f", v.frequency),
+        1 if v.events_enabled else 0,
+        *v.delta.to_bytes(4, "little"),
+        *v.name.encode("utf-8").ljust(33, b"\x00"),
+    ]
+    count = 50
+    access = RegisterAccess.WRITABLE | RegisterAccess.EVENTFUL
+    payload_struct = (
+        StructField("pwm_port", PayloadType.U8, offset=0),
+        StructField("duty_cycle", PayloadType.FLOAT, offset=4),
+        StructField("frequency", PayloadType.FLOAT, offset=8),
+        StructField("events_enabled", PayloadType.U8, offset=12),
+        StructField("delta", PayloadType.U32, offset=13),
+        StructField("name", PayloadType.U8, offset=17, length=33, is_string=True),
     )
 
 
@@ -82,27 +80,25 @@ class AnalogDataPayload:
 
 
 # NOTE: Defined here to avoid the generation of the Behavior device generation. This is what is currently generated.
-class AnalogData(IRegister[AnalogDataPayload]):
-    spec = RegisterSpec[AnalogDataPayload](
-        address=44,  # BehaviorRegisters.ANALOG_DATA on the Behavior generated code
-        payload_type=PayloadType.S16,
-        decode=lambda payload: AnalogDataPayload(
-            AnalogInput0=payload[0],
-            Encoder=payload[1],
-            AnalogInput1=payload[2],
-        ),
-        encode=lambda value: [
-            value.AnalogInput0,
-            value.Encoder,
-            value.AnalogInput1,
-        ],
-        count=3,
-        access=RegisterAccess.EVENTFUL,
-        fields=(
-            "AnalogInput0",
-            "Encoder",
-            "AnalogInput1",
-        ),
+class AnalogData(RegisterBase[AnalogDataPayload]):
+    address = 44  # BehaviorRegisters.ANALOG_DATA on the Behavior generated code
+    payload_type = PayloadType.S16
+    decode = lambda payload: AnalogDataPayload(
+        AnalogInput0=payload[0],
+        Encoder=payload[1],
+        AnalogInput1=payload[2],
+    )
+    encode = lambda value: [
+        value.AnalogInput0,
+        value.Encoder,
+        value.AnalogInput1,
+    ]
+    count = 3
+    access = RegisterAccess.EVENTFUL
+    fields = (
+        "AnalogInput0",
+        "Encoder",
+        "AnalogInput1",
     )
 
 
@@ -143,7 +139,7 @@ HARP_READ = _legacy_module.read
 
 def harp_data_dump(
     path: Path,
-    register_cls: type[IRegister] = REGISTER,
+    register_cls: type[RegisterBase] = REGISTER,
     payload_type: PayloadType = PAYLOAD_TYPE,
 ) -> RegisterDump:
     return load_register_dump(
@@ -156,7 +152,7 @@ def harp_data_dump(
 
 def harp_data_dataframe(
     path: Path,
-    register_cls: type[IRegister] = REGISTER,
+    register_cls: type[RegisterBase] = REGISTER,
     payload_type: PayloadType = PAYLOAD_TYPE,
     *,
     include_timestamp: bool,
