@@ -141,6 +141,10 @@ class StructPayload:
         if "__byte_count__" not in cls.__dict__:
             cls.__byte_count__ = max(f.offset + f.byte_size for f in s)
 
+        for f in s:
+            if not f.is_string:
+                object.__setattr__(f, "_struct", struct.Struct(f"<{STRUCT_CHARS[f.type]}"))
+
     @classmethod
     def _decode_bytes(cls, raw_payload):
         data = bytes(raw_payload)
@@ -156,7 +160,7 @@ class StructPayload:
                     struct.unpack_from(f"<{n}{STRUCT_CHARS[f.type]}", data, f.offset)
                 )
             else:
-                val = struct.unpack_from(f"<{STRUCT_CHARS[f.type]}", data, f.offset)[0]
+                val = f._struct.unpack_from(data, f.offset)[0]
                 if f.mask is not None:
                     val = (val & f.mask) >> f.shift
                     if f.mask_type is not None:
@@ -193,13 +197,11 @@ class StructPayload:
                 n = f.length // f.type.type_size()
                 struct.pack_into(f"<{n}{STRUCT_CHARS[f.type]}", buf, f.offset, *val)
             elif f.mask is not None:
-                fmt = f"<{STRUCT_CHARS[f.type]}"
-                current = struct.unpack_from(fmt, buf, f.offset)[0]
+                current = f._struct.unpack_from(buf, f.offset)[0]
                 current |= (int(val) << f.shift) & f.mask
-                struct.pack_into(fmt, buf, f.offset, current)
+                f._struct.pack_into(buf, f.offset, current)
             else:
-                struct.pack_into(
-                    f"<{STRUCT_CHARS[f.type]}",
+                f._struct.pack_into(
                     buf,
                     f.offset,
                     int(val) if isinstance(val, bool) else val,
