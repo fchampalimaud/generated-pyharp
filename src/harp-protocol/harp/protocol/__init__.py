@@ -10,6 +10,7 @@ from harp.protocol.base import (
     ResetFlags,
 )
 from harp.protocol.message import HarpMessage
+from harp.protocol.registers import RegisterBase, IRegister
 
 __all__ = [
     "PROTOCOL_VERSION",
@@ -22,4 +23,6 @@ __all__ = [
     "OperationMode",
     "EnableFlag",
     "HarpMessage",
+    "RegisterBase",
+    "IRegister",
 ]

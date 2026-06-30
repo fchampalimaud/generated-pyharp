@@ -10,7 +10,7 @@ from typing import Literal, TypeVar
 
 import numpy as np
 from harp.protocol import PayloadType
-from harp.protocol.registers import IRegister, RegisterSpec, StructField
+from harp.protocol.registers import RegisterBase, StructField
 from harp.protocol.utils import PayloadTypeFlag
 
 T = TypeVar("T")
@@ -278,45 +278,37 @@ def _struct_field_format(struct_field: StructField):
     return scalar
 
 
-def _build_struct_dtype(spec: RegisterSpec, payload_type: PayloadType) -> np.dtype:
-    payload_byte_size = spec.count * numpy_scalar_dtype(payload_type).itemsize
+def _build_struct_dtype(register_cls: type[RegisterBase], payload_type: PayloadType) -> np.dtype:
+    payload_byte_size = register_cls.count * numpy_scalar_dtype(payload_type).itemsize
     return np.dtype(
         {
-            "names": [f.name for f in spec.payload_struct],
-            "formats": [_struct_field_format(f) for f in spec.payload_struct],
-            "offsets": [f.offset for f in spec.payload_struct],
+            "names": [f.name for f in register_cls.payload_struct],
+            "formats": [_struct_field_format(f) for f in register_cls.payload_struct],
+            "offsets": [f.offset for f in register_cls.payload_struct],
             "itemsize": payload_byte_size,
         }
     )
 
 
+def register_field_names(register_cls: type[RegisterBase[T]]) -> tuple[str, ...]:
+    if register_cls.payload_struct is not None:
+        return tuple(f.name for f in register_cls.payload_struct)
 
-def register_spec(register_cls: type[IRegister[T]]) -> RegisterSpec[T]:
-    return register_cls.spec
-
-
-def register_field_names(register_cls: type[IRegister[T]]) -> tuple[str, ...]:
-    spec = register_spec(register_cls)
-
-    # payload_struct supersedes fields
-    if spec.payload_struct is not None:
-        return tuple(f.name for f in spec.payload_struct)
-
-    if spec.fields is not None:
-        if len(spec.fields) != spec.count:
+    if register_cls.fields is not None:
+        if len(register_cls.fields) != register_cls.count:
             raise ValueError(
-                f"{register_cls.__name__}: field count {len(spec.fields)} "
-                f"does not match payload count {spec.count}."
+                f"{register_cls.__name__}: field count {len(register_cls.fields)} "
+                f"does not match payload count {register_cls.count}."
             )
-        return spec.fields
+        return register_cls.fields
 
     dtype = getattr(register_cls, "dtype", None)
     if dtype is not None and is_dataclass(dtype):
         names = tuple(field.name for field in fields(dtype))
-        if len(names) != spec.count:
+        if len(names) != register_cls.count:
             raise ValueError(
                 f"{register_cls.__name__}: field count {len(names)} "
-                f"does not match payload count {spec.count}."
+                f"does not match payload count {register_cls.count}."
             )
         return names
 
@@ -339,7 +331,7 @@ def numpy_scalar_dtype(payload_type: PayloadType) -> np.dtype:
 
 
 def resolve_dump_payload_type(
-    register_cls: type[IRegister[T]],
+    register_cls: type[RegisterBase[T]],
     payload_type: PayloadType | None = None,
     *,
     timestamped: bool = True,
@@ -347,7 +339,7 @@ def resolve_dump_payload_type(
     if payload_type is not None:
         return payload_type
 
-    raw = int(register_spec(register_cls).payload_type)
+    raw = int(register_cls.payload_type)
     if timestamped:
         raw |= int(PayloadTypeFlag.HAS_TIMESTAMP)
     else:
@@ -357,7 +349,7 @@ def resolve_dump_payload_type(
 
 
 def payload_nbytes(
-    register_cls: type[IRegister[T]],
+    register_cls: type[RegisterBase[T]],
     payload_type: PayloadType | None = None,
     *,
     timestamped: bool = True,
@@ -367,12 +359,11 @@ def payload_nbytes(
         payload_type,
         timestamped=timestamped,
     )
-    spec = register_spec(register_cls)
-    return spec.count * numpy_scalar_dtype(actual_payload_type).itemsize
+    return register_cls.count * numpy_scalar_dtype(actual_payload_type).itemsize
 
 
 def frame_length(
-    register_cls: type[IRegister[T]],
+    register_cls: type[RegisterBase[T]],
     payload_type: PayloadType,
 ) -> int:
     return (
@@ -387,11 +378,9 @@ def frame_length(
 
 
 def build_frame_dtype(
-    register_cls: type[IRegister[T]],
+    register_cls: type[RegisterBase[T]],
     payload_type: PayloadType,
 ) -> np.dtype:
-    spec = register_spec(register_cls)
-
     descr: list[tuple] = [
         ("message_type", "u1"),
         ("length", "u1"),
@@ -408,11 +397,11 @@ def build_frame_dtype(
             ]
         )
 
-    if spec.payload_struct is not None:
-        descr.append(("payload", _build_struct_dtype(spec, payload_type)))
+    if register_cls.payload_struct is not None:
+        descr.append(("payload", _build_struct_dtype(register_cls, payload_type)))
     else:
         item_dtype = numpy_scalar_dtype(payload_type)
-        descr.append(("payload", item_dtype, (spec.count,)))
+        descr.append(("payload", item_dtype, (register_cls.count,)))
 
     descr.append(("checksum", "u1"))
     return np.dtype(descr)
@@ -433,7 +422,7 @@ def coerce_validation_mode(value: ValidationMode | str) -> ValidationMode:
 
 def validate_dump_header(
     path: Path,
-    register_cls: type[IRegister[T]],
+    register_cls: type[RegisterBase[T]],
     payload_type: PayloadType,
 ) -> int:
     with path.open("rb") as stream:
@@ -443,10 +432,9 @@ def validate_dump_header(
         raise ValueError("File is too small to contain a Harp frame header.")
 
     _, length, address, _, payload_type_raw = header
-    spec = register_spec(register_cls)
 
-    if address != spec.address:
-        raise ValueError(f"Expected register {spec.address}, found register {address}.")
+    if address != register_cls.address:
+        raise ValueError(f"Expected register {register_cls.address}, found register {address}.")
 
     if payload_type_raw != int(payload_type):
         try:
@@ -469,15 +457,13 @@ def validate_dump_header(
 
 def validate_dump_records(
     records: np.ndarray,
-    register_cls: type[IRegister[T]],
+    register_cls: type[RegisterBase[T]],
     payload_type: PayloadType,
     expected_length: int,
 ) -> None:
-    spec = register_spec(register_cls)
-
     if not np.all(records["length"] == expected_length):
         raise ValueError("Not all frames have the expected Harp length.")
-    if not np.all(records["address"] == spec.address):
+    if not np.all(records["address"] == register_cls.address):
         raise ValueError("File contains frames from other registers.")
     if not np.all(records["payload_type"] == int(payload_type)):
         raise ValueError("File contains mixed payload types.")
@@ -498,7 +484,7 @@ def validate_checksums(records: np.ndarray, frame_dtype: np.dtype) -> None:
 
 def load_register_dump(
     path: str | PathLike[str],
-    register_cls: type[IRegister[T]],
+    register_cls: type[RegisterBase[T]],
     payload_type: PayloadType | None = None,
     *,
     timestamped: bool = True,
@@ -531,17 +517,16 @@ def load_register_dump(
         )
 
     field_names = register_field_names(register_cls)
-    spec = register_spec(register_cls)
 
     if complete_frames == 0:
         records = np.empty(0, dtype=frame_dtype)
-        if spec.payload_struct is not None:
+        if register_cls.payload_struct is not None:
             empty_payload = np.empty(
-                0, dtype=_build_struct_dtype(spec, actual_payload_type)
+                0, dtype=_build_struct_dtype(register_cls, actual_payload_type)
             )
         else:
             scalar_dtype = numpy_scalar_dtype(actual_payload_type)
-            empty_payload = np.empty((0, spec.count), dtype=scalar_dtype)
+            empty_payload = np.empty((0, register_cls.count), dtype=scalar_dtype)
 
         return RegisterDump(
             records=records,
@@ -557,7 +542,7 @@ def load_register_dump(
 
     raw_flat = np.fromfile(path, dtype=np.uint8, count=complete_frames * frame_size)
     records = raw_flat.view(frame_dtype)
-    raw_2d = raw_flat.reshape(complete_frames, frame_size) if spec.payload_struct is not None else None
+    raw_2d = raw_flat.reshape(complete_frames, frame_size) if register_cls.payload_struct is not None else None
 
     if validation_mode is ValidationMode.ALL:
         validate_dump_records(
@@ -576,7 +561,7 @@ def load_register_dump(
         validate_checksums(records, frame_dtype)
 
     payload_matrix = records["payload"]
-    if payload_matrix.ndim == 1 and spec.payload_struct is None:
+    if payload_matrix.ndim == 1 and register_cls.payload_struct is None:
         payload_matrix = payload_matrix.reshape(len(records), 1)
 
     timestamp = None
