@@ -127,6 +127,21 @@ class PayloadType(IntEnum):
     def type_size(self) -> int:
         return self & PayloadTypeFlag.TYPE_SIZE
 
+    def struct_char(self) -> str:
+        return STRUCT_CHARS[self & ~PayloadTypeFlag.HAS_TIMESTAMP]
+
+
+STRUCT_CHARS: dict[int, str] = {
+    PayloadType.U8: "B",
+    PayloadType.S8: "b",
+    PayloadType.U16: "H",
+    PayloadType.S16: "h",
+    PayloadType.U32: "I",
+    PayloadType.S32: "i",
+    PayloadType.U64: "Q",
+    PayloadType.S64: "q",
+    PayloadType.FLOAT: "f",
+}
 
 
 class ResetFlags(IntFlag):

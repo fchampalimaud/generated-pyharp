@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import math
 import struct
-from typing import ClassVar, Optional, TypeVar, TypeAlias
+from typing import ClassVar, Optional, TypeAlias
 
 from harp.protocol import MessageType, PayloadType
+from harp.protocol.base import STRUCT_CHARS
 from harp.protocol.utils import PayloadTypeFlag
 
 RawPayload: TypeAlias = int | float | list[int] | list[float]
@@ -247,59 +248,18 @@ class HarpMessage:
 
         return raw_timestamp
 
-    # TODO: improve function
     @classmethod
     def _get_raw_payload(
         cls,
         payload_type: PayloadType,
         payload: RawPayload | None,
-    ) -> bytearray:
-        raw_payload = bytearray()
-
+    ) -> bytes:
         if payload is None:
-            return raw_payload
+            return b""
 
-        if payload_type.is_float() and not (
-            isinstance(payload, float)
-            or (
-                isinstance(payload, list)
-                and all(isinstance(item, float) for item in payload)
-            )
-        ):
-            from harp.protocol.exceptions import HarpException
-
-            raise HarpException(
-                "The payload type provided indicates the payload should be a float or a list[float], but the payload provided is not."
-            )
-        elif not payload_type.is_float() and not (
-            isinstance(payload, int)
-            or (
-                isinstance(payload, list)
-                and all(isinstance(item, int) for item in payload)
-            )
-        ):
-            from harp.protocol.exceptions import HarpException
-
-            raise HarpException(
-                "The payload type provided indicates the payload should be an int or a list[int], but the payload provided is not."
-            )
-
-        if isinstance(payload, int) or isinstance(payload, float):
-            values = [payload]
-        elif isinstance(payload, list):
-            values = payload
-
-        for val in values:
-            if isinstance(val, float):
-                raw_payload += struct.pack("<f", val)
-            else:
-                raw_payload += val.to_bytes(
-                    payload_type.type_size(),
-                    byteorder="little",
-                    signed=payload_type.is_signed(),
-                )
-
-        return raw_payload
+        values = [payload] if isinstance(payload, (int, float)) else payload
+        char = STRUCT_CHARS[int(payload_type) & 0xEF]
+        return struct.pack(f"<{len(values)}{char}", *values)
 
     @classmethod
     def _calculate_checksum(cls, message_bytes: bytes) -> int:
@@ -314,36 +274,18 @@ class HarpMessage:
         return sum(message_bytes[:-1]) & 255
 
     def _get_payload(self) -> RawPayload | None:
-        type_size = self.payload_type & 0b1111
-        if self.payload_type.has_timestamp():
-            raw_payload = self._bytes[11:-1]
-        else:
-            raw_payload = self._bytes[5:-1]
+        pt = self._bytes[4]
+        type_size = pt & 0x0F
+        raw = self._bytes[11:-1] if (pt & 0x10) else self._bytes[5:-1]
 
-        if self.payload_type.is_float():
-            if len(raw_payload) == 4:
-                return struct.unpack("<f", raw_payload)[0]
-            else:
-                return [
-                    struct.unpack("<f", raw_payload[i : i + 4])[0]
-                    for i in range(0, len(raw_payload), 4)
-                ]
-        else:
-            if len(raw_payload) == type_size:
-                return int.from_bytes(
-                    raw_payload,
-                    byteorder="little",
-                    signed=self.payload_type.is_signed(),
-                )
-            else:
-                return [
-                    int.from_bytes(
-                        raw_payload[i : i + type_size],
-                        byteorder="little",
-                        signed=self.payload_type.is_signed(),
-                    )
-                    for i in range(0, len(raw_payload), type_size)
-                ]
+        if not raw:
+            return None
+
+        char = STRUCT_CHARS[pt & 0xEF]
+        count = len(raw) // type_size
+        if count == 1:
+            return struct.unpack(f"<{char}", raw)[0]
+        return list(struct.unpack(f"<{count}{char}", raw))
 
     def __repr__(self) -> str:
         """

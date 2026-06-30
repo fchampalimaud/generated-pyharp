@@ -14,6 +14,7 @@ from typing import (
 )
 
 from harp.protocol.base import (
+    STRUCT_CHARS,
     ClockConfigurationFlags,
     EnableFlag,
     MessageType,
@@ -23,25 +24,11 @@ from harp.protocol.base import (
 )
 from harp.protocol.message import HarpMessage
 
-
 T = TypeVar("T")
 
 
 def _id(x):
     return x
-
-
-_STRUCT_CHARS = {
-    PayloadType.U8: "B",
-    PayloadType.S8: "b",
-    PayloadType.U16: "H",
-    PayloadType.S16: "h",
-    PayloadType.U32: "I",
-    PayloadType.S32: "i",
-    PayloadType.U64: "Q",
-    PayloadType.S64: "q",
-    PayloadType.FLOAT: "f",
-}
 
 
 def _extract_payload_cls(cls):
@@ -149,9 +136,7 @@ class StructPayload:
 
         if "__base_type__" not in cls.__dict__:
             types = {f.type for f in s if not f.is_string and f.length is None}
-            cls.__base_type__ = (
-                next(iter(types)) if len(types) == 1 else PayloadType.U8
-            )
+            cls.__base_type__ = next(iter(types)) if len(types) == 1 else PayloadType.U8
 
         if "__byte_count__" not in cls.__dict__:
             cls.__byte_count__ = max(f.offset + f.byte_size for f in s)
@@ -163,21 +148,15 @@ class StructPayload:
         for f in cls.__struct__:
             if f.is_string:
                 kwargs[f.name] = (
-                    data[f.offset : f.offset + f.length]
-                    .rstrip(b"\x00")
-                    .decode("utf-8")
+                    data[f.offset : f.offset + f.length].rstrip(b"\x00").decode("utf-8")
                 )
             elif f.length is not None:
                 n = f.length // f.type.type_size()
                 kwargs[f.name] = list(
-                    struct.unpack_from(
-                        f"<{n}{_STRUCT_CHARS[f.type]}", data, f.offset
-                    )
+                    struct.unpack_from(f"<{n}{STRUCT_CHARS[f.type]}", data, f.offset)
                 )
             else:
-                val = struct.unpack_from(
-                    f"<{_STRUCT_CHARS[f.type]}", data, f.offset
-                )[0]
+                val = struct.unpack_from(f"<{STRUCT_CHARS[f.type]}", data, f.offset)[0]
                 if f.mask is not None:
                     val = (val & f.mask) >> f.shift
                     if f.mask_type is not None:
@@ -212,17 +191,15 @@ class StructPayload:
                 buf[f.offset : f.offset + len(encoded)] = encoded
             elif f.length is not None:
                 n = f.length // f.type.type_size()
-                struct.pack_into(
-                    f"<{n}{_STRUCT_CHARS[f.type]}", buf, f.offset, *val
-                )
+                struct.pack_into(f"<{n}{STRUCT_CHARS[f.type]}", buf, f.offset, *val)
             elif f.mask is not None:
-                fmt = f"<{_STRUCT_CHARS[f.type]}"
+                fmt = f"<{STRUCT_CHARS[f.type]}"
                 current = struct.unpack_from(fmt, buf, f.offset)[0]
                 current |= (int(val) << f.shift) & f.mask
                 struct.pack_into(fmt, buf, f.offset, current)
             else:
                 struct.pack_into(
-                    f"<{_STRUCT_CHARS[f.type]}",
+                    f"<{STRUCT_CHARS[f.type]}",
                     buf,
                     f.offset,
                     int(val) if isinstance(val, bool) else val,
@@ -306,9 +283,7 @@ class MaskPayload:
         kwargs = {}
         for name, mf in cls.__masks__:
             raw_value = (raw_payload & mf.mask) >> mf.shift
-            kwargs[name] = (
-                bool(raw_value) if mf.type is bool else mf.type(raw_value)
-            )
+            kwargs[name] = bool(raw_value) if mf.type is bool else mf.type(raw_value)
         return cls(**kwargs)
 
     def encode(self) -> int:
@@ -319,7 +294,6 @@ class MaskPayload:
 
 
 class RegisterBase(Generic[T]):
-
     payload_type: ClassVar[PayloadType | None] = None
     count: ClassVar[int] = 1
     access: ClassVar[RegisterAccess] = RegisterAccess.READABLE
@@ -336,8 +310,10 @@ class RegisterBase(Generic[T]):
 
         payload_cls = _extract_payload_cls(cls)
 
-        if payload_cls is not None and isinstance(payload_cls, type) and issubclass(
-            payload_cls, StructPayload
+        if (
+            payload_cls is not None
+            and isinstance(payload_cls, type)
+            and issubclass(payload_cls, StructPayload)
         ):
             if cls.payload_type is None:
                 cls.payload_type = payload_cls.__base_type__
@@ -350,8 +326,10 @@ class RegisterBase(Generic[T]):
             if cls.encode is None:
                 cls.encode = staticmethod(lambda v: v.encode())
 
-        elif payload_cls is not None and isinstance(payload_cls, type) and issubclass(
-            payload_cls, MaskPayload
+        elif (
+            payload_cls is not None
+            and isinstance(payload_cls, type)
+            and issubclass(payload_cls, MaskPayload)
         ):
             if cls.payload_type is None:
                 cls.payload_type = payload_cls.__base_type__
