@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -10,7 +9,7 @@ import numpy as np
 import pandas as pd
 from harp.data import RegisterDump, ValidationMode, load_register_dump
 from harp.protocol import PayloadType
-from harp.protocol.registers import RegisterBase, RegisterAccess, StructField
+from harp.protocol.registers import RegisterBase, RegisterAccess, StructPayload, payload_field
 
 CURRENT_DIR = Path(__file__).resolve().parent
 # NOTE: change this path to point to the actual dump file you want to benchmark (ours is ~123MB, ~2h session)
@@ -25,81 +24,32 @@ VALIDATION = ValidationMode.HEADER
 # NOTE: Example for complex configuration based on the complex configuratione example in https://github.com/harp-tech/generators/pull/87
 # and added a string field to demonstrate string generation.
 @dataclass
-class ComplexConfigPayload:
-    pwm_port: int
-    duty_cycle: float
-    frequency: float
-    events_enabled: bool
-    delta: int
-    name: str
+class ComplexConfigPayload(StructPayload):
+    pwm_port: int = payload_field(PayloadType.U8, offset=0)
+    duty_cycle: float = payload_field(PayloadType.FLOAT, offset=4)
+    frequency: float = payload_field(PayloadType.FLOAT, offset=8)
+    events_enabled: bool = payload_field(PayloadType.U8, offset=12)
+    delta: int = payload_field(PayloadType.U32, offset=13)
+    name: str = payload_field(PayloadType.U8, offset=17, length=33, is_string=True)
 
 
 class ComplexConfiguration(RegisterBase[ComplexConfigPayload]):
     address = 34
-    payload_type = PayloadType.U8
-    decode = lambda p: ComplexConfigPayload(
-        pwm_port=p[0],
-        duty_cycle=struct.unpack_from("<f", bytes(p), 4)[0],
-        frequency=struct.unpack_from("<f", bytes(p), 8)[0],
-        events_enabled=p[12] != 0,
-        delta=int.from_bytes(bytes(p[13:17]), "little"),
-        name=bytes(p[17:50]).rstrip(b"\x00").decode("utf-8"),
-    )
-    encode = lambda v: [
-        v.pwm_port,
-        0,
-        0,
-        0,
-        *struct.pack("<f", v.duty_cycle),
-        *struct.pack("<f", v.frequency),
-        1 if v.events_enabled else 0,
-        *v.delta.to_bytes(4, "little"),
-        *v.name.encode("utf-8").ljust(33, b"\x00"),
-    ]
-    count = 50
     access = RegisterAccess.WRITABLE | RegisterAccess.EVENTFUL
-    payload_struct = (
-        StructField("pwm_port", PayloadType.U8, offset=0),
-        StructField("duty_cycle", PayloadType.FLOAT, offset=4),
-        StructField("frequency", PayloadType.FLOAT, offset=8),
-        StructField("events_enabled", PayloadType.U8, offset=12),
-        StructField("delta", PayloadType.U32, offset=13),
-        StructField("name", PayloadType.U8, offset=17, length=33, is_string=True),
-    )
 
 
 # NOTE: Defined here to avoid the generation of the Behavior device generation. This is what is currently generated.
 @dataclass
-class AnalogDataPayload:
-    # The voltage at the output of the ADC channel 0.
-    AnalogInput0: int
-    # The quadrature counter value on Port 2
-    Encoder: int
-    # The voltage at the output of the ADC channel 1.
-    AnalogInput1: int
+class AnalogDataPayload(StructPayload):
+    AnalogInput0: int = payload_field(PayloadType.S16, offset=0)
+    Encoder: int = payload_field(PayloadType.S16, offset=2)
+    AnalogInput1: int = payload_field(PayloadType.S16, offset=4)
 
 
 # NOTE: Defined here to avoid the generation of the Behavior device generation. This is what is currently generated.
 class AnalogData(RegisterBase[AnalogDataPayload]):
-    address = 44  # BehaviorRegisters.ANALOG_DATA on the Behavior generated code
-    payload_type = PayloadType.S16
-    decode = lambda payload: AnalogDataPayload(
-        AnalogInput0=payload[0],
-        Encoder=payload[1],
-        AnalogInput1=payload[2],
-    )
-    encode = lambda value: [
-        value.AnalogInput0,
-        value.Encoder,
-        value.AnalogInput1,
-    ]
-    count = 3
+    address = 44
     access = RegisterAccess.EVENTFUL
-    fields = (
-        "AnalogInput0",
-        "Encoder",
-        "AnalogInput1",
-    )
 
 
 REGISTER = AnalogData

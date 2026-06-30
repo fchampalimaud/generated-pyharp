@@ -1,7 +1,6 @@
 import time
 
 import pandas as pd
-
 from benchmark_common import (
     DUMP_PATH,
     DUMP_PATH_COMPLEX,
@@ -11,7 +10,6 @@ from benchmark_common import (
 )
 from harp.data import ValidationMode, load_register_dump
 from harp.protocol import PayloadType
-
 
 results = {}
 
@@ -44,7 +42,7 @@ def profile_path(label, path, register_cls, payload_type):
 
     # Step 3b: DataFrame (copy=True, default — numpy-level copy, safe)
     t6 = time.perf_counter()
-    df_copy = pd.DataFrame(dump.payload_columns(copy=True), copy=False)
+    df_copy = pd.DataFrame(dump.payload_columns(copy=True), copy=False)  # noqa: F841
     t7 = time.perf_counter()
     df_copy_ms = (t7 - t6) * 1000
     print(f"  DataFrame(copy=True):   {df_copy_ms:.2f} ms")
@@ -84,8 +82,12 @@ for copy_label, key in [
     estimated_ms = complex_us * analog["entries"] / 1000
 
     print(f"  --- {copy_label} ---")
-    print(f"  AnalogData:     {analog_us:.3f} µs/entry  ({analog['entries']:,} entries)")
-    print(f"  ComplexConfig:  {complex_us:.3f} µs/entry  ({complex_['entries']:,} entries)")
+    print(
+        f"  AnalogData:     {analog_us:.3f} µs/entry  ({analog['entries']:,} entries)"
+    )
+    print(
+        f"  ComplexConfig:  {complex_us:.3f} µs/entry  ({complex_['entries']:,} entries)"
+    )
     print(f"  Slowdown:       {slowdown:.1f}x per entry")
     print(
         f"  ComplexConfig @ {analog['entries']:,} entries (estimate): "
