@@ -6,38 +6,23 @@ from harp.protocol.message import HarpMessage
 from harp.protocol.registers import (
     RegisterAccess,
     RegisterBase,
+    StructPayload,
+    payload_field,
 )
 
 ANALOG_DATA_ADDRESS = 44
 
 
 @dataclass
-class AnalogDataPayload:
-    AnalogInput0: int
-    Encoder: int
-    AnalogInput1: int
+class AnalogDataPayload(StructPayload):
+    AnalogInput0: int = payload_field(PayloadType.S16, offset=0)
+    Encoder: int = payload_field(PayloadType.S16, offset=2)
+    AnalogInput1: int = payload_field(PayloadType.S16, offset=4)
 
 
 class AnalogData(RegisterBase[AnalogDataPayload]):
     address = ANALOG_DATA_ADDRESS
-    payload_type = PayloadType.S16
-    decode = lambda payload: AnalogDataPayload(
-        AnalogInput0=payload[0],
-        Encoder=payload[1],
-        AnalogInput1=payload[2],
-    )
-    encode = lambda value: [
-        value.AnalogInput0,
-        value.Encoder,
-        value.AnalogInput1,
-    ]
-    count = 3
     access = RegisterAccess.EVENTFUL
-    fields = (
-        "AnalogInput0",
-        "Encoder",
-        "AnalogInput1",
-    )
 
 
 def test_analog_data_event_roundtrip() -> None:

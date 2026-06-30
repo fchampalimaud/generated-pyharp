@@ -14,7 +14,6 @@ from harp.protocol.registers import (
     RegisterBase,
     IRegister,
     RegisterAccess,
-    StructField,
     WhoAmI,
     HardwareVersionHigh,
     HardwareVersionLow,
@@ -46,21 +45,27 @@ class TestRegisterBaseClass:
                 decode = int
                 encode = lambda v: v
 
-    def test_missing_decode_raises(self):
+    def test_missing_decode_raises_for_non_derivable_type(self):
         with pytest.raises(TypeError, match="decode and encode are required"):
 
-            class Bad(RegisterBase[int]):
+            class Bad(RegisterBase[object]):
                 address = 99
                 payload_type = PayloadType.U8
-                encode = lambda v: v
 
-    def test_missing_encode_raises(self):
-        with pytest.raises(TypeError, match="decode and encode are required"):
+    def test_auto_derives_int_decode(self):
+        class AutoInt(RegisterBase[int]):
+            address = 99
+            payload_type = PayloadType.U8
 
-            class Bad(RegisterBase[int]):
-                address = 99
-                payload_type = PayloadType.U8
-                decode = int
+        assert AutoInt.decode is int
+
+    def test_auto_derives_intflag_decode(self):
+        class AutoFlag(RegisterBase[ResetFlags]):
+            address = 99
+            payload_type = PayloadType.U8
+
+        assert AutoFlag.decode is not None
+        assert AutoFlag.decode(1) == ResetFlags.RESTORE_DEFAULT
 
     def test_length_equals_count(self):
         assert WhoAmI.length == WhoAmI.count == 1
