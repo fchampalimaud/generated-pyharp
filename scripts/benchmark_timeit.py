@@ -10,6 +10,7 @@ from benchmark_common import (
     print_ratio_summary,
     print_sample_output,
     sanity_check,
+    sanity_check_complex,
 )
 
 SHOW_SAMPLE_OUTPUT = True
@@ -67,6 +68,7 @@ def main() -> None:
 
     print("\nSanity check:")
     sanity_check()
+    sanity_check_complex()
 
     if SHOW_SAMPLE_OUTPUT:
         print_sample_output()

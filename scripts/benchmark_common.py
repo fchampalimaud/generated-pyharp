@@ -55,6 +55,7 @@ class AnalogData(RegisterBase[AnalogDataPayload]):
 REGISTER = AnalogData
 PAYLOAD_TYPE = PayloadType.TIMESTAMPED_S16
 ANALOG_COLUMNS = ("AnalogInput0", "Encoder", "AnalogInput1")
+COMPLEX_COLUMNS = tuple(f"byte_{i}" for i in range(50))
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,17 @@ def harp_python_dataframe(path: Path, *, include_timestamp: bool) -> pd.DataFram
 
     result = df.reset_index(drop=True)
     return result.loc[:, list(ANALOG_COLUMNS)]
+
+
+def harp_python_dataframe_complex(path: Path, *, include_timestamp: bool) -> pd.DataFrame:
+    df = HARP_READ(path, columns=list(COMPLEX_COLUMNS))
+
+    if include_timestamp:
+        result = df.reset_index().rename(columns={"Time": "timestamp"})
+        return result.loc[:, ["timestamp", *COMPLEX_COLUMNS]]
+
+    result = df.reset_index(drop=True)
+    return result.loc[:, list(COMPLEX_COLUMNS)]
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +227,49 @@ def sanity_check(path: Path = DUMP_PATH) -> None:
     )
 
 
+def sanity_check_complex(path: Path = DUMP_PATH_COMPLEX) -> None:
+    if not path.exists():
+        print(f"  Skipping complex sanity check: {path} not found.")
+        return
+
+    legacy = harp_python_dataframe_complex(path, include_timestamp=False)
+    current = harp_data_dataframe(
+        path,
+        ComplexConfiguration,
+        PayloadType.TIMESTAMPED_U8,
+        include_timestamp=False,
+    )
+
+    assert len(current) == len(legacy), (
+        f"row count mismatch: harp-python={len(legacy)}, harp.data={len(current)}"
+    )
+
+    np.testing.assert_array_equal(
+        legacy["byte_0"].to_numpy(),
+        current["pwm_port"].to_numpy().astype(np.uint8),
+        err_msg="pwm_port (byte_0) differs between harp-python and harp.data",
+    )
+
+    legacy_ts = harp_python_dataframe_complex(path, include_timestamp=True)
+    current_ts = harp_data_dataframe(
+        path,
+        ComplexConfiguration,
+        PayloadType.TIMESTAMPED_U8,
+        include_timestamp=True,
+    )
+
+    np.testing.assert_allclose(
+        legacy_ts["timestamp"].to_numpy(),
+        current_ts["timestamp"].to_numpy(),
+        err_msg="timestamp column differs between harp-python and harp.data (complex)",
+    )
+
+    print(
+        f"  Sanity check (complex) passed: {len(legacy_ts):,} rows, "
+        f"pwm_port and timestamps match."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Benchmark cases
 # ---------------------------------------------------------------------------
@@ -267,9 +322,25 @@ def comparison_cases(path: Path = DUMP_PATH) -> list[BenchmarkCase]:
             ),
         ),
         BenchmarkCase(
+            name="harp_python_no_ts_complex",
+            label="harp-python  read() without timestamp - complex (raw U8)",
+            baseline_name=None,
+            run=lambda path=DUMP_PATH_COMPLEX: harp_python_dataframe_complex(
+                path, include_timestamp=False
+            ),
+        ),
+        BenchmarkCase(
+            name="harp_python_ts_complex",
+            label="harp-python  read() + timestamp - complex (raw U8)",
+            baseline_name=None,
+            run=lambda path=DUMP_PATH_COMPLEX: harp_python_dataframe_complex(
+                path, include_timestamp=True
+            ),
+        ),
+        BenchmarkCase(
             name="harp_data_no_ts_no_copy_complex",
             label="harp.data    load + DataFrame without timestamp (no copy) - complex",
-            baseline_name=None,
+            baseline_name="harp_python_no_ts_complex",
             run=lambda path=DUMP_PATH_COMPLEX: harp_data_dataframe(
                 path,
                 ComplexConfiguration,
@@ -281,12 +352,36 @@ def comparison_cases(path: Path = DUMP_PATH) -> list[BenchmarkCase]:
         BenchmarkCase(
             name="harp_data_no_ts_copy_complex",
             label="harp.data    load + DataFrame without timestamp (copy) - complex",
-            baseline_name=None,
+            baseline_name="harp_python_no_ts_complex",
             run=lambda path=DUMP_PATH_COMPLEX: harp_data_dataframe(
                 path,
                 ComplexConfiguration,
                 PayloadType.TIMESTAMPED_U8,
                 include_timestamp=False,
+                copy=True,
+            ),
+        ),
+        BenchmarkCase(
+            name="harp_data_ts_no_copy_complex",
+            label="harp.data    load + DataFrame + timestamp (no copy) - complex",
+            baseline_name="harp_python_ts_complex",
+            run=lambda path=DUMP_PATH_COMPLEX: harp_data_dataframe(
+                path,
+                ComplexConfiguration,
+                PayloadType.TIMESTAMPED_U8,
+                include_timestamp=True,
+                copy=False,
+            ),
+        ),
+        BenchmarkCase(
+            name="harp_data_ts_copy_complex",
+            label="harp.data    load + DataFrame + timestamp (copy) - complex",
+            baseline_name="harp_python_ts_complex",
+            run=lambda path=DUMP_PATH_COMPLEX: harp_data_dataframe(
+                path,
+                ComplexConfiguration,
+                PayloadType.TIMESTAMPED_U8,
+                include_timestamp=True,
                 copy=True,
             ),
         ),
