@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import struct
+import typing
 from dataclasses import dataclass
 from enum import IntEnum, IntFlag
 from typing import (
@@ -11,22 +13,45 @@ from typing import (
     TypeVar,
 )
 
-from harp.protocol import (
+from harp.protocol.base import (
     ClockConfigurationFlags,
     EnableFlag,
-    HarpMessage,
     MessageType,
-    OperationControlPayload,
     OperationMode,
     PayloadType,
     ResetFlags,
 )
+from harp.protocol.message import HarpMessage
+
 
 T = TypeVar("T")
 
 
 def _id(x):
     return x
+
+
+_STRUCT_CHARS = {
+    PayloadType.U8: "B",
+    PayloadType.S8: "b",
+    PayloadType.U16: "H",
+    PayloadType.S16: "h",
+    PayloadType.U32: "I",
+    PayloadType.S32: "i",
+    PayloadType.U64: "Q",
+    PayloadType.S64: "q",
+    PayloadType.FLOAT: "f",
+}
+
+
+def _extract_payload_cls(cls):
+    for base in getattr(cls, "__orig_bases__", ()):
+        origin = typing.get_origin(base)
+        if origin is RegisterBase:
+            args = typing.get_args(base)
+            if args:
+                return args[0]
+    return None
 
 
 class RegisterAccess(IntFlag):
@@ -36,17 +61,14 @@ class RegisterAccess(IntFlag):
 
     @property
     def readable(self) -> bool:
-        """All registers are readable by default."""
         return True
 
     @property
     def writable(self) -> bool:
-        """Writable if the WRITABLE bit is set."""
         return bool(self & RegisterAccess.WRITABLE)
 
     @property
     def eventful(self) -> bool:
-        """Eventful if the EVENTFUL bit is set."""
         return bool(self & RegisterAccess.EVENTFUL)
 
 
@@ -65,8 +87,207 @@ class StructField:
         return self.type.type_size()
 
 
+def payload_field(
+    payload_type: PayloadType,
+    offset: int,
+    *,
+    length: int | None = None,
+    is_string: bool = False,
+) -> Any:
+    return StructField(
+        name="",
+        type=payload_type,
+        offset=offset,
+        length=length,
+        is_string=is_string,
+    )
+
+
+class StructPayload:
+    __struct__: ClassVar[tuple[StructField, ...]]
+    __base_type__: ClassVar[PayloadType]
+    __byte_count__: ClassVar[int]
+
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+
+        inline: list[tuple[str, StructField]] = []
+        for attr_name, value in list(cls.__dict__.items()):
+            if isinstance(value, StructField):
+                inline.append((attr_name, value))
+                delattr(cls, attr_name)
+
+        if inline:
+            cls.__struct__ = tuple(
+                StructField(
+                    name=name,
+                    type=sf.type,
+                    offset=sf.offset,
+                    length=sf.length,
+                    is_string=sf.is_string,
+                )
+                for name, sf in inline
+            )
+
+        s = getattr(cls, "__struct__", None)
+        if s is None:
+            return
+
+        if "__base_type__" not in cls.__dict__:
+            types = {f.type for f in s if not f.is_string and f.length is None}
+            cls.__base_type__ = (
+                next(iter(types)) if len(types) == 1 else PayloadType.U8
+            )
+
+        if "__byte_count__" not in cls.__dict__:
+            cls.__byte_count__ = max(f.offset + f.byte_size for f in s)
+
+    @classmethod
+    def _decode_bytes(cls, raw_payload):
+        data = bytes(raw_payload)
+        kwargs = {}
+        for f in cls.__struct__:
+            if f.is_string:
+                kwargs[f.name] = (
+                    data[f.offset : f.offset + f.length]
+                    .rstrip(b"\x00")
+                    .decode("utf-8")
+                )
+            elif f.length is not None:
+                n = f.length // f.type.type_size()
+                kwargs[f.name] = list(
+                    struct.unpack_from(
+                        f"<{n}{_STRUCT_CHARS[f.type]}", data, f.offset
+                    )
+                )
+            else:
+                kwargs[f.name] = struct.unpack_from(
+                    f"<{_STRUCT_CHARS[f.type]}", data, f.offset
+                )[0]
+        return cls(**kwargs)
+
+    @classmethod
+    def _decode_values(cls, raw_payload):
+        kwargs = {}
+        ts = cls.__base_type__.type_size()
+        for f in cls.__struct__:
+            idx = f.offset // ts
+            if f.length is not None:
+                n = f.length // ts
+                kwargs[f.name] = list(raw_payload[idx : idx + n])
+            else:
+                kwargs[f.name] = raw_payload[idx]
+        return cls(**kwargs)
+
+    def _encode_bytes(self) -> list:
+        buf = bytearray(type(self).__byte_count__)
+        for f in type(self).__struct__:
+            val = getattr(self, f.name)
+            if f.is_string:
+                encoded = val.encode("utf-8")
+                buf[f.offset : f.offset + len(encoded)] = encoded
+            elif f.length is not None:
+                n = f.length // f.type.type_size()
+                struct.pack_into(
+                    f"<{n}{_STRUCT_CHARS[f.type]}", buf, f.offset, *val
+                )
+            else:
+                struct.pack_into(
+                    f"<{_STRUCT_CHARS[f.type]}",
+                    buf,
+                    f.offset,
+                    int(val) if isinstance(val, bool) else val,
+                )
+        return list(buf)
+
+    def _encode_values(self) -> list:
+        ts = type(self).__base_type__.type_size()
+        count = type(self).__byte_count__ // ts
+        result = [0] * count
+        for f in type(self).__struct__:
+            idx = f.offset // ts
+            val = getattr(self, f.name)
+            if f.length is not None:
+                n = f.length // ts
+                result[idx : idx + n] = list(val)
+            else:
+                result[idx] = val
+        return result
+
+    @classmethod
+    def decode(cls, raw_payload):
+        if cls.__base_type__.type_size() == 1:
+            return cls._decode_bytes(raw_payload)
+        return cls._decode_values(raw_payload)
+
+    def encode(self) -> list:
+        if type(self).__base_type__.type_size() == 1:
+            return self._encode_bytes()
+        return self._encode_values()
+
+
+@dataclass(frozen=True)
+class MaskField:
+    mask: int
+    type: type = bool
+
+    @property
+    def shift(self) -> int:
+        return (self.mask & -self.mask).bit_length() - 1
+
+
+def mask_field(
+    *,
+    bit: int | None = None,
+    mask: int | None = None,
+    type: type = bool,
+) -> Any:
+    if bit is not None:
+        mask = 1 << bit
+    if mask is None:
+        raise ValueError("Either bit or mask must be provided")
+    return MaskField(mask=mask, type=type)
+
+
+class MaskPayload:
+    __masks__: ClassVar[tuple[tuple[str, MaskField], ...]]
+    __base_type__: ClassVar[PayloadType]
+
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+
+        inline: list[tuple[str, MaskField]] = []
+        for attr_name, value in list(cls.__dict__.items()):
+            if isinstance(value, MaskField):
+                inline.append((attr_name, value))
+                delattr(cls, attr_name)
+
+        if inline:
+            cls.__masks__ = tuple(inline)
+
+        if "__base_type__" not in cls.__dict__:
+            cls.__base_type__ = PayloadType.U8
+
+    @classmethod
+    def decode(cls, raw_payload):
+        kwargs = {}
+        for name, mf in cls.__masks__:
+            raw_value = (raw_payload & mf.mask) >> mf.shift
+            kwargs[name] = (
+                bool(raw_value) if mf.type is bool else mf.type(raw_value)
+            )
+        return cls(**kwargs)
+
+    def encode(self) -> int:
+        result = 0
+        for name, mf in type(self).__masks__:
+            result |= (int(getattr(self, name)) << mf.shift) & mf.mask
+        return result
+
+
 class RegisterBase(Generic[T]):
 
+    payload_type: ClassVar[PayloadType | None] = None
     count: ClassVar[int] = 1
     access: ClassVar[RegisterAccess] = RegisterAccess.READABLE
     fields: ClassVar[tuple[str, ...] | None] = None
@@ -79,8 +300,58 @@ class RegisterBase(Generic[T]):
 
         if "address" not in cls.__dict__:
             raise TypeError(f"{cls.__name__}: address is required")
+
+        payload_cls = _extract_payload_cls(cls)
+
+        if payload_cls is not None and isinstance(payload_cls, type) and issubclass(
+            payload_cls, StructPayload
+        ):
+            if cls.payload_type is None:
+                cls.payload_type = payload_cls.__base_type__
+            if cls.payload_struct is None:
+                cls.payload_struct = payload_cls.__struct__
+            if "count" not in cls.__dict__:
+                cls.count = payload_cls.__byte_count__ // cls.payload_type.type_size()
+            if cls.decode is None:
+                cls.decode = payload_cls.decode
+            if cls.encode is None:
+                cls.encode = staticmethod(lambda v: v.encode())
+
+        elif payload_cls is not None and isinstance(payload_cls, type) and issubclass(
+            payload_cls, MaskPayload
+        ):
+            if cls.payload_type is None:
+                cls.payload_type = payload_cls.__base_type__
+            if cls.fields is None:
+                cls.fields = tuple(name for name, _ in payload_cls.__masks__)
+            if cls.decode is None:
+                cls.decode = payload_cls.decode
+            if cls.encode is None:
+                cls.encode = staticmethod(lambda v: v.encode())
+
+        elif payload_cls is not None and cls.decode is None:
+            if payload_cls is int:
+                cls.decode = int
+                cls.encode = cls.encode or _id
+            elif payload_cls is float:
+                cls.decode = float
+                cls.encode = cls.encode or _id
+            elif payload_cls is bytes:
+                cls.decode = _id
+                cls.encode = cls.encode or _id
+            elif isinstance(payload_cls, type) and issubclass(
+                payload_cls, (IntEnum, IntFlag)
+            ):
+                cls.decode = staticmethod(lambda v, c=payload_cls: c(v))
+                cls.encode = cls.encode or staticmethod(lambda v: int(v))
+
+        if cls.payload_type is None:
+            raise TypeError(f"{cls.__name__}: payload_type is required")
         if cls.decode is None or cls.encode is None:
-            raise TypeError(f"{cls.__name__}: decode and encode are required")
+            raise TypeError(
+                f"{cls.__name__}: decode and encode are required "
+                f"(could not auto-derive from type parameter)"
+            )
 
         cls.length = cls.count
 
