@@ -1,6 +1,7 @@
+import struct
+
 import pytest
 from harp.protocol import MessageType, PayloadType
-from harp.protocol.exceptions import HarpException
 from harp.protocol.message import HarpMessage
 from harp.protocol.registers import CommonRegisters
 
@@ -23,8 +24,8 @@ def test_invalid_checksum_raises_value_error() -> None:
 
 # Payload type mismatch tests
 def test_float_payload_with_int_type_raises() -> None:
-    """Passing a float value when payload type is integer raises HarpException."""
-    with pytest.raises(HarpException, match="int"):
+    """Passing a float value when payload type is integer raises struct.error."""
+    with pytest.raises(struct.error):
         HarpMessage.from_payload(
             3.14,
             message_type=MessageType.WRITE,
@@ -33,20 +34,20 @@ def test_float_payload_with_int_type_raises() -> None:
         )
 
 
-def test_int_payload_with_float_type_raises() -> None:
-    """Passing an int value when payload type is FLOAT raises HarpException."""
-    with pytest.raises(HarpException, match="float"):
-        HarpMessage.from_payload(
-            42,
-            message_type=MessageType.WRITE,
-            address=42,
-            payload_type=PayloadType.FLOAT,
-        )
+def test_int_payload_with_float_type_coerces() -> None:
+    """Passing an int value when payload type is FLOAT coerces to float."""
+    msg = HarpMessage.from_payload(
+        42,
+        message_type=MessageType.WRITE,
+        address=42,
+        payload_type=PayloadType.FLOAT,
+    )
+    assert abs(msg.payload - 42.0) < 1e-6
 
 
 def test_float_list_with_int_type_raises() -> None:
-    """Passing a list of floats when payload type is integer raises HarpException."""
-    with pytest.raises(HarpException, match="int"):
+    """Passing a list of floats when payload type is integer raises struct.error."""
+    with pytest.raises(struct.error):
         HarpMessage.from_payload(
             [1.0, 2.0],
             message_type=MessageType.WRITE,
@@ -55,15 +56,17 @@ def test_float_list_with_int_type_raises() -> None:
         )
 
 
-def test_int_list_with_float_type_raises() -> None:
-    """Passing a list of ints when payload type is FLOAT raises HarpException."""
-    with pytest.raises(HarpException, match="float"):
-        HarpMessage.from_payload(
-            [1, 2, 3],
-            message_type=MessageType.WRITE,
-            address=42,
-            payload_type=PayloadType.FLOAT,
-        )
+def test_int_list_with_float_type_coerces() -> None:
+    """Passing a list of ints when payload type is FLOAT coerces to floats."""
+    msg = HarpMessage.from_payload(
+        [1, 2, 3],
+        message_type=MessageType.WRITE,
+        address=42,
+        payload_type=PayloadType.FLOAT,
+    )
+    assert len(msg.payload) == 3
+    for actual, expected in zip(msg.payload, [1.0, 2.0, 3.0]):
+        assert abs(actual - expected) < 1e-6
 
 
 # Missing property / parameter tests
