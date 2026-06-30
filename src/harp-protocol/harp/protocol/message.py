@@ -306,10 +306,7 @@ class HarpMessage:
         int
             The value of the checksum
         """
-        checksum: int = 0
-        for byte in message_bytes[:-1]:
-            checksum += byte
-        return checksum & 255
+        return sum(message_bytes[:-1]) & 255
 
     def _get_payload(self) -> RawPayload | None:
         type_size = self.payload_type & 0b1111
