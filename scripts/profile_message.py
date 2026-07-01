@@ -48,9 +48,6 @@ t = timeit.timeit(
 )
 print(f"  _get_raw_payload():          {t / N * 1e6:.2f} us")
 
-t = timeit.timeit(lambda: HarpMessage._get_raw_timestamp(None), number=N)
-print(f"  _get_raw_timestamp(None):    {t / N * 1e6:.2f} us")
-
 msg = AnalogData.format(val, MessageType.EVENT)
 raw = msg.to_bytes()
 t = timeit.timeit(lambda: HarpMessage._calculate_checksum(raw), number=N)

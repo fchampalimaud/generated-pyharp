@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import struct
 from typing import ClassVar, Optional, TypeAlias
 
@@ -190,25 +189,28 @@ class HarpMessage:
     ) -> HarpMessage:
         if timestamp is None:
             payload_type = PayloadType(payload_type & ~(PayloadTypeFlag.HAS_TIMESTAMP))
+            ts_size = 0
         else:
             payload_type = PayloadType(payload_type | PayloadTypeFlag.HAS_TIMESTAMP)
+            ts_size = 6
 
-        raw_timestamp = cls._get_raw_timestamp(timestamp)
         raw_payload = cls._get_raw_payload(payload_type, payload)
+        payload_len = len(raw_payload)
 
-        message_bytes = bytearray(
-            cls._base_length + len(raw_timestamp) + len(raw_payload) + 2
-        )
+        total = cls._base_length + ts_size + payload_len + 2
+        message_bytes = bytearray(total)
         message_bytes[0] = message_type
-        message_bytes[1] = cls._base_length + len(raw_timestamp) + len(raw_payload)
+        message_bytes[1] = total - 2
         message_bytes[2] = address
         message_bytes[3] = port
         message_bytes[4] = payload_type
-        if timestamp is None:
-            payload_index = 5
-        else:
+        if timestamp is not None:
+            seconds = int(timestamp)
+            ticks = int((timestamp - seconds) / 32e-6)
+            struct.pack_into("<IH", message_bytes, 5, seconds, ticks)
             payload_index = 11
-            message_bytes[5:11] = raw_timestamp
+        else:
+            payload_index = 5
         if payload is not None:
             message_bytes[payload_index:-1] = raw_payload
         message_bytes[-1] = cls._calculate_checksum(message_bytes)
@@ -230,23 +232,6 @@ class HarpMessage:
             The bytes containing the whole Harp message
         """
         return self._bytes
-
-    @classmethod
-    def _get_raw_timestamp(
-        cls,
-        timestamp: Optional[float],
-    ) -> bytearray:
-        if timestamp is None:
-            return bytearray()
-
-        seconds = int(math.floor(timestamp))
-        microseconds = int((timestamp - seconds) / (32 * 10**-6))
-
-        raw_timestamp = bytearray(6)
-        raw_timestamp[0:4] = seconds.to_bytes(length=4, byteorder="little")
-        raw_timestamp[4:6] = microseconds.to_bytes(length=2, byteorder="little")
-
-        return raw_timestamp
 
     @classmethod
     def _get_raw_payload(
