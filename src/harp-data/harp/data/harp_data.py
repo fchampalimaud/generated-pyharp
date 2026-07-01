@@ -268,6 +268,22 @@ class RegisterDump:
         )
 
 
+def _is_homogeneous_struct(fields: tuple[StructField, ...]) -> bool:
+    if not fields:
+        return False
+    base_type = fields[0].type
+    expected_offset = 0
+    for f in fields:
+        if f.is_string or f.mask is not None or f.length is not None:
+            return False
+        if f.type != base_type:
+            return False
+        if f.offset != expected_offset:
+            return False
+        expected_offset += f.type.type_size()
+    return True
+
+
 def _struct_field_format(struct_field: StructField):
     if struct_field.is_string:
         return f"S{struct_field.byte_size}"
@@ -397,7 +413,7 @@ def build_frame_dtype(
             ]
         )
 
-    if register_cls.payload_struct is not None:
+    if register_cls.payload_struct is not None and not _is_homogeneous_struct(register_cls.payload_struct):
         descr.append(("payload", _build_struct_dtype(register_cls, payload_type)))
     else:
         item_dtype = numpy_scalar_dtype(payload_type)
