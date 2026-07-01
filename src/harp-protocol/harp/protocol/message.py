@@ -9,6 +9,18 @@ from harp.protocol.utils import PayloadTypeFlag
 
 RawPayload: TypeAlias = int | float | list[int] | list[float]
 
+_struct_cache: dict[tuple[int, int], struct.Struct] = {}
+
+
+def _get_cached_struct(payload_type_key: int, count: int) -> struct.Struct:
+    key = (payload_type_key, count)
+    s = _struct_cache.get(key)
+    if s is None:
+        char = STRUCT_CHARS[payload_type_key]
+        s = struct.Struct(f"<{count}{char}")
+        _struct_cache[key] = s
+    return s
+
 
 class HarpMessage:
     """
@@ -242,9 +254,12 @@ class HarpMessage:
         if payload is None:
             return b""
 
-        values = [payload] if isinstance(payload, (int, float)) else payload
-        char = STRUCT_CHARS[int(payload_type) & 0xEF]
-        return struct.pack(f"<{len(values)}{char}", *values)
+        if isinstance(payload, (int, float)):
+            values = (payload,)
+        else:
+            values = payload
+        s = _get_cached_struct(int(payload_type) & 0xEF, len(values))
+        return s.pack(*values)
 
     @classmethod
     def _calculate_checksum(cls, message_bytes: bytes | bytearray) -> int:
@@ -266,11 +281,11 @@ class HarpMessage:
         if not raw:
             return None
 
-        char = STRUCT_CHARS[pt & 0xEF]
         count = len(raw) // type_size
+        s = _get_cached_struct(pt & 0xEF, count)
         if count == 1:
-            return struct.unpack(f"<{char}", raw)[0]
-        return list(struct.unpack(f"<{count}{char}", raw))
+            return s.unpack(raw)[0]
+        return list(s.unpack(raw))
 
     def __repr__(self) -> str:
         """
