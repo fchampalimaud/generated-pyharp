@@ -211,7 +211,7 @@ class HarpMessage:
             message_bytes[5:11] = raw_timestamp
         if payload is not None:
             message_bytes[payload_index:-1] = raw_payload
-        message_bytes[-1] = cls._calculate_checksum(bytes(message_bytes))
+        message_bytes[-1] = cls._calculate_checksum(message_bytes)
 
         msg = object.__new__(cls)
         msg._bytes = bytes(message_bytes)
@@ -262,7 +262,7 @@ class HarpMessage:
         return struct.pack(f"<{len(values)}{char}", *values)
 
     @classmethod
-    def _calculate_checksum(cls, message_bytes: bytes) -> int:
+    def _calculate_checksum(cls, message_bytes: bytes | bytearray) -> int:
         """
         Calculates the checksum of the Harp message.
 
