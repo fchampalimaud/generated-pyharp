@@ -97,12 +97,6 @@ class TestHarpVersionAutoDerive:
         result = _roundtrip(CustomRawPayload, v)
         assert result == v
 
-    def test_harp_version_encode_decode(self):
-        v = HarpVersion(1, 13, 0)
-        packed = v.__harp_encode__()
-        decoded = HarpVersion.__harp_decode__(packed)
-        assert decoded == v
-
     def test_harp_version_max_values(self):
         v = HarpVersion(255, 255, 255)
         result = _roundtrip(CustomPayload, v)

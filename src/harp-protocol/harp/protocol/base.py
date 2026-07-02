@@ -250,11 +250,4 @@ class HarpVersion(NamedTuple):
     minor: int
     patch: int
 
-    @classmethod
-    def __harp_decode__(cls, v):
-        return cls(v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF)
-
-    def __harp_encode__(self):
-        return self.major | (self.minor << 8) | (self.patch << 16)
-
 
