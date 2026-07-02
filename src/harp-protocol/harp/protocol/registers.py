@@ -372,6 +372,7 @@ class RegisterBase(Generic[T]):
                     cls.count = len(payload_cls._fields)
                 cls.decode = staticmethod(lambda v, c=payload_cls: c(*v))
                 cls.encode = cls.encode or staticmethod(lambda v: list(v))
+                cls._namedtuple_cls = payload_cls
             elif hasattr(payload_cls, "__harp_decode__"):
                 cls.decode = payload_cls.__harp_decode__
                 if cls.encode is None and hasattr(payload_cls, "__harp_encode__"):

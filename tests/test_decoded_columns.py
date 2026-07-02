@@ -132,18 +132,15 @@ class TestBoolField:
 
 
 class TestMultiElementNamedTuple:
-    def test_version_harp_version_expanded(self, corpus_dir):
+    def test_version_harp_version_single_column(self, corpus_dir):
         reg = _get_reg("Version")
         dump = _generate_and_load(reg, corpus_dir)
         cols = dump.columns(decode=True)
 
         for field_name in ("HardwareVersion", "FirmwareVersion", "CoreVersion"):
-            for suffix in ("major", "minor", "patch"):
-                key = f"{field_name}_{suffix}"
-                assert key in cols, f"Missing column {key}"
-                assert cols[key].ndim == 1
-
-        assert "HardwareVersion" not in cols
+            assert field_name in cols, f"Missing column {field_name}"
+            assert cols[field_name].dtype == object
+            assert isinstance(cols[field_name][0], HarpVersion)
 
     def test_version_values_match_per_message(self, corpus_dir):
         reg = _get_reg("Version")
@@ -152,11 +149,9 @@ class TestMultiElementNamedTuple:
 
         for i in range(min(10, len(dump))):
             parsed = reg.register.parse(HarpMessage(dump.records[i].tobytes()))
-            assert cols["HardwareVersion_major"][i] == parsed.HardwareVersion.major
-            assert cols["HardwareVersion_minor"][i] == parsed.HardwareVersion.minor
-            assert cols["HardwareVersion_patch"][i] == parsed.HardwareVersion.patch
-            assert cols["FirmwareVersion_major"][i] == parsed.FirmwareVersion.major
-            assert cols["CoreVersion_major"][i] == parsed.CoreVersion.major
+            assert cols["HardwareVersion"][i] == parsed.HardwareVersion
+            assert cols["FirmwareVersion"][i] == parsed.FirmwareVersion
+            assert cols["CoreVersion"][i] == parsed.CoreVersion
 
 
 class TestMultiElementPlainArray:
@@ -213,6 +208,7 @@ class TestScalarRegister:
         cols_raw = dump.columns(decode=False)
 
         assert set(cols_decoded.keys()) == set(cols_raw.keys())
+        assert "DigitalInputs" in cols_decoded
 
     def test_counter0_decode_passthrough(self, corpus_dir):
         reg = _get_reg("Counter0")
@@ -221,6 +217,34 @@ class TestScalarRegister:
         cols_raw = dump.columns(decode=False)
 
         assert set(cols_decoded.keys()) == set(cols_raw.keys())
+        assert "Counter0" in cols_decoded
+
+
+class TestNamedTupleRegister:
+    def test_custom_payload_single_column(self, corpus_dir):
+        reg = _get_reg("CustomPayload")
+        dump = _generate_and_load(reg, corpus_dir)
+        cols = dump.payload_columns(decode=True)
+
+        assert list(cols.keys()) == ["HarpVersion"]
+        assert cols["HarpVersion"].dtype == object
+        assert isinstance(cols["HarpVersion"][0], HarpVersion)
+
+    def test_custom_payload_values_match_parse(self, corpus_dir):
+        reg = _get_reg("CustomPayload")
+        dump = _generate_and_load(reg, corpus_dir)
+        cols = dump.payload_columns(decode=True)
+
+        for i in range(min(10, len(dump))):
+            parsed = reg.register.parse(HarpMessage(dump.records[i].tobytes()))
+            assert cols["HarpVersion"][i] == parsed
+
+    def test_custom_payload_raw_has_three_columns(self, corpus_dir):
+        reg = _get_reg("CustomPayload")
+        dump = _generate_and_load(reg, corpus_dir)
+        cols = dump.payload_columns(decode=False)
+
+        assert len(cols) == 3
 
 
 class TestDecodedColumnNames:
@@ -229,9 +253,9 @@ class TestDecodedColumnNames:
         dump = _generate_and_load(reg, corpus_dir)
         names = dump.decoded_column_names()
 
-        assert "HardwareVersion_major" in names
-        assert "HardwareVersion_minor" in names
-        assert "HardwareVersion_patch" in names
+        assert "HardwareVersion" in names
+        assert "FirmwareVersion" in names
+        assert "CoreVersion" in names
         assert "Hash_0" in names
         assert "Hash_19" in names
         assert "Tag" in names

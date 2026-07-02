@@ -114,6 +114,7 @@ class RegisterDump:
     payload_struct: tuple[StructField, ...] | None = None
     _column_cache: dict[str, np.ndarray] = field(default_factory=dict, repr=False)
     _raw_2d: np.ndarray | None = field(default=None, repr=False)
+    _namedtuple_cls: type | None = field(default=None, repr=False)
 
     def __len__(self) -> int:
         return len(self.records)
@@ -179,6 +180,11 @@ class RegisterDump:
     ) -> dict[str, np.ndarray]:
         if decode and self.payload_struct is not None:
             return self._decoded_payload_columns(copy=copy)
+        if decode and self._namedtuple_cls is not None:
+            cls = self._namedtuple_cls
+            m = self.payload_matrix
+            make = np.frompyfunc(cls, len(cls._fields), 1)
+            return {cls.__name__: make(*(m[:, i] for i in range(m.shape[1])))}
         names = self.column_names(prefix=prefix)
         if self.payload_matrix.dtype.names is not None and not self._column_cache:
             self._bulk_extract_columns()
@@ -230,12 +236,14 @@ class RegisterDump:
             elif f.length is not None:
                 n_elements = f.length // f.type.type_size()
                 if f.interface_type is not None and hasattr(f.interface_type, "_fields"):
-                    suffixes = f.interface_type._fields
+                    cls = f.interface_type
+                    make = np.frompyfunc(cls, len(cls._fields), 1)
+                    result[f.name] = make(*(raw[:, i] for i in range(n_elements)))
                 else:
                     suffixes = [str(i) for i in range(n_elements)]
-                for i, suffix in enumerate(suffixes):
-                    col = raw[:, i]
-                    result[f"{f.name}_{suffix}"] = col.copy() if copy else col
+                    for i, suffix in enumerate(suffixes):
+                        col = raw[:, i]
+                        result[f"{f.name}_{suffix}"] = col.copy() if copy else col
 
             elif f.mask is not None:
                 decoded = (raw & f.mask) >> f.shift
@@ -252,6 +260,8 @@ class RegisterDump:
         return result
 
     def decoded_column_names(self) -> tuple[str, ...]:
+        if self._namedtuple_cls is not None:
+            return (self._namedtuple_cls.__name__,)
         if self.payload_struct is None:
             return self.column_names()
         names: list[str] = []
@@ -259,7 +269,7 @@ class RegisterDump:
             if f.is_string or f.length is None:
                 names.append(f.name)
             elif f.interface_type is not None and hasattr(f.interface_type, "_fields"):
-                names.extend(f"{f.name}_{s}" for s in f.interface_type._fields)
+                names.append(f.name)
             else:
                 n = f.length // f.type.type_size()
                 names.extend(f"{f.name}_{i}" for i in range(n))
@@ -385,6 +395,9 @@ def register_field_names(register_cls: type[RegisterBase[T]]) -> tuple[str, ...]
                 f"does not match payload count {register_cls.count}."
             )
         return names
+
+    if register_cls.count == 1:
+        return (register_cls.__name__,)
 
     return ()
 
@@ -596,6 +609,7 @@ def _build_dump(
             if actual_payload_type.has_timestamp()
             else None,
             payload_struct=register_cls.payload_struct,
+            _namedtuple_cls=getattr(register_cls, "_namedtuple_cls", None),
         )
 
     records = raw_flat[: complete_frames * frame_size].view(frame_dtype)
@@ -633,6 +647,7 @@ def _build_dump(
         timestamp=timestamp,
         payload_struct=register_cls.payload_struct,
         _raw_2d=raw_2d,
+        _namedtuple_cls=getattr(register_cls, "_namedtuple_cls", None),
     )
 
 
