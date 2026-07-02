@@ -16,6 +16,7 @@ dependencies = [
 [project.scripts]
 harp-benchmark = "harp.benchmarks.benchmark:main"
 harp-benchmark-generate = "harp.benchmarks.generate:main"
+harp-benchmark-compare = "harp.benchmarks.compare:main"
 
 [tool.uv.sources]
 harp-protocol = { workspace = true }
