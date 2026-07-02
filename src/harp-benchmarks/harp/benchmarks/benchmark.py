@@ -1,25 +1,92 @@
 from __future__ import annotations
 
 import argparse
-import statistics
-import timeit
+import platform
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from statistics import mean, stdev
+from time import perf_counter
+from typing import Callable
 
+import numpy as np
 import pandas as pd
 from harp.data import ValidationMode, load_register_dump
+from harp.data.harp_data import build_frame_dtype, payload_nbytes
 
 from harp.benchmarks._registers import (
     BENCHMARK_REGISTERS,
     BenchmarkedRegister,
+    DATA_DIR,
     REPORT_PATH,
     corpus_path,
 )
 from harp.benchmarks.generate import _resolve_payload_type, ensure_corpus
 
+_MIB = 1024**2
 
-def _benchmark_register(
-    reg: BenchmarkedRegister,
+
+@dataclass
+class TimingStats:
+    min: float
+    mean: float
+    max: float
+    stdev: float
+    frames: int
+    file_bytes: int
+
+    @property
+    def mframes_per_s(self) -> float:
+        return (self.frames / self.mean) / 1e6
+
+    @property
+    def mib_per_s(self) -> float:
+        return (self.file_bytes / self.mean) / _MIB
+
+
+@dataclass
+class RegisterResult:
+    name: str
+    address: int
+    frames: int
+    stride: int
+    payload_bytes: int
+    file_bytes: int
+    load_preread: TimingStats
+    load_reread: TimingStats
+    to_columns: TimingStats
+    df_preread: TimingStats
+    df_reread: TimingStats
+
+
+def _time(
+    fn: Callable[[], object],
+    *,
     runs: int,
-) -> dict[str, dict[str, float]] | None:
+    frames: int,
+    file_bytes: int,
+) -> TimingStats:
+    fn()
+    samples: list[float] = []
+    for _ in range(runs):
+        t0 = perf_counter()
+        fn()
+        samples.append(perf_counter() - t0)
+    return TimingStats(
+        min=min(samples),
+        mean=mean(samples),
+        max=max(samples),
+        stdev=stdev(samples) if len(samples) > 1 else 0.0,
+        frames=frames,
+        file_bytes=file_bytes,
+    )
+
+
+def benchmark_register(
+    reg: BenchmarkedRegister,
+    *,
+    runs: int,
+) -> RegisterResult | None:
     path = corpus_path(reg)
     if not path.exists():
         print(f"  {reg.name}: corpus not found, skipping.")
@@ -27,127 +94,221 @@ def _benchmark_register(
 
     register_cls = reg.register
     payload_type = _resolve_payload_type(register_cls)
-    file_size = path.stat().st_size
+    file_bytes = path.stat().st_size
 
-    results: dict[str, dict[str, float]] = {}
+    frame_dtype = build_frame_dtype(register_cls, payload_type)
+    stride = frame_dtype.itemsize
+    frames = file_bytes // stride
+    p_bytes = payload_nbytes(register_cls, payload_type, timestamped=True)
 
-    # -- load_register_dump (re-read from disk each run) --
-    def load_reread():
-        return load_register_dump(
+    raw = path.read_bytes()
+
+    load_preread = _time(
+        lambda: load_register_dump(
+            raw, register_cls, payload_type, validation=ValidationMode.HEADER
+        ),
+        runs=runs,
+        frames=frames,
+        file_bytes=file_bytes,
+    )
+
+    load_reread = _time(
+        lambda: load_register_dump(
             path, register_cls, payload_type, validation=ValidationMode.HEADER
-        )
+        ),
+        runs=runs,
+        frames=frames,
+        file_bytes=file_bytes,
+    )
 
-    timeit.Timer(load_reread).timeit(1)  # warm-up
-    times = timeit.Timer(load_reread).repeat(runs, 1)
-    results["load_reread"] = _summarize(times)
+    dump = load_register_dump(
+        raw, register_cls, payload_type, validation=ValidationMode.HEADER
+    )
 
-    # -- columns -> DataFrame (decoded) --
-    dump = load_reread()
-    n_frames = len(dump)
-    actual_frame_size = file_size / n_frames if n_frames else 0
+    to_columns = _time(
+        lambda: dump.columns(
+            include_timestamp=True, timestamp="float", decode=True
+        ),
+        runs=runs,
+        frames=frames,
+        file_bytes=file_bytes,
+    )
 
-    def columns_to_df():
-        data = dump.columns(include_timestamp=True, timestamp="float", decode=True)
-        return pd.DataFrame(data, copy=False)
+    df_preread = _time(
+        lambda: pd.DataFrame(
+            load_register_dump(
+                raw, register_cls, payload_type, validation=ValidationMode.HEADER
+            ).columns(include_timestamp=True, timestamp="float", decode=True),
+            copy=False,
+        ),
+        runs=runs,
+        frames=frames,
+        file_bytes=file_bytes,
+    )
 
-    timeit.Timer(columns_to_df).timeit(1)
-    times = timeit.Timer(columns_to_df).repeat(runs, 1)
-    results["to_dataframe"] = _summarize(times)
+    df_reread = _time(
+        lambda: pd.DataFrame(
+            load_register_dump(
+                path, register_cls, payload_type, validation=ValidationMode.HEADER
+            ).columns(include_timestamp=True, timestamp="float", decode=True),
+            copy=False,
+        ),
+        runs=runs,
+        frames=frames,
+        file_bytes=file_bytes,
+    )
 
-    # -- columns -> DataFrame (raw, no decode) --
-    def columns_to_df_raw():
-        data = dump.columns(include_timestamp=True, timestamp="float", decode=False)
-        return pd.DataFrame(data, copy=False)
-
-    try:
-        timeit.Timer(columns_to_df_raw).timeit(1)
-        times = timeit.Timer(columns_to_df_raw).repeat(runs, 1)
-        results["to_df_raw"] = _summarize(times)
-    except ValueError:
-        pass
-
-    # -- full path: load + decoded DataFrame --
-    def full_path():
-        d = load_register_dump(
-            path, register_cls, payload_type, validation=ValidationMode.HEADER
-        )
-        data = d.columns(include_timestamp=True, timestamp="float", decode=True)
-        return pd.DataFrame(data, copy=False)
-
-    timeit.Timer(full_path).timeit(1)
-    times = timeit.Timer(full_path).repeat(runs, 1)
-    results["full_path"] = _summarize(times)
-
-    results["_meta"] = {
-        "frames": float(n_frames),
-        "file_mib": file_size / (1024**2),
-        "frame_size": actual_frame_size,
-    }
-
-    return results
-
-
-def _summarize(times: list[float]) -> dict[str, float]:
-    return {
-        "min": min(times),
-        "mean": statistics.mean(times),
-        "max": max(times),
-        "stdev": statistics.stdev(times) if len(times) > 1 else 0.0,
-    }
-
-
-def _format_row(name: str, stage: str, stats: dict[str, float], meta: dict[str, float]) -> str:
-    frames = meta["frames"]
-    mib = meta["file_mib"]
-    t = stats["min"]
-    mframes_s = (frames / t / 1e6) if t > 0 else 0
-    mib_s = (mib / t) if t > 0 else 0
-
-    return (
-        f"| {name:<25s} | {stage:<16s} "
-        f"| {stats['min']*1000:8.2f} | {stats['mean']*1000:8.2f} "
-        f"| {stats['max']*1000:8.2f} | {stats['stdev']*1000:8.2f} "
-        f"| {mframes_s:8.2f} | {mib_s:8.1f} |"
+    return RegisterResult(
+        name=reg.name,
+        address=register_cls.address,
+        frames=frames,
+        stride=stride,
+        payload_bytes=p_bytes,
+        file_bytes=file_bytes,
+        load_preread=load_preread,
+        load_reread=load_reread,
+        to_columns=to_columns,
+        df_preread=df_preread,
+        df_reread=df_reread,
     )
 
 
-def _write_report(
-    all_results: dict[str, dict[str, dict[str, float]]],
-    runs: int,
-    entries: int,
-) -> None:
-    lines = [
-        "# Harp Benchmark Report",
-        "",
-        f"- Runs: {runs}",
-        f"- Entries per register: {entries:,}",
-        "",
-        "| Register                  | Stage            |  min(ms) | mean(ms) |  max(ms) | stdev(ms) | Mframes/s |  MiB/s |",
-        "|---------------------------|------------------|----------|----------|----------|-----------|-----------|--------|",
-    ]
+def _fmt_ms(s: float) -> str:
+    return f"{s * 1e3:.2f}"
 
-    for name, results in all_results.items():
-        meta = results["_meta"]
-        for stage in ("load_reread", "to_dataframe", "to_df_raw", "full_path"):
-            if stage in results:
-                lines.append(_format_row(name, stage, results[stage], meta))
+
+def build_report(results: list[RegisterResult], *, runs: int) -> str:
+    lines: list[str] = []
+    lines.append("# Harp parsing benchmark\n")
+    lines.append(
+        "Parsing throughput for every register in `harp.benchmarks.register_models`, "
+        "measured over Harp wire-format dumps generated by `harp.benchmarks.generate`.\n"
+    )
+
+    lines.append("## Environment\n")
+    lines.append("| Key | Value |")
+    lines.append("| --- | --- |")
+    lines.append(f"| Platform | {platform.platform()} |")
+    lines.append(f"| Python | {sys.version.split()[0]} |")
+    lines.append(f"| NumPy | {np.__version__} |")
+    lines.append(f"| pandas | {pd.__version__} |")
+    lines.append(f"| Runs per measurement | {runs} |")
+    lines.append(
+        "| Measured op | one full-file parse; min/mean/stdev over runs (1 warm-up discarded) |\n"
+    )
+
+    lines.append("## Datasets\n")
+    lines.append(
+        "| Register | Addr | Frames | Payload (B) | Frame/stride (B) | File (MiB) |"
+    )
+    lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")
+    for r in results:
         lines.append(
-            f"|                           |                  |          |          |          |           |           |        |"
+            f"| {r.name} | {r.address} | {r.frames:,} | {r.payload_bytes} | "
+            f"{r.stride} | {r.file_bytes / _MIB:.1f} |"
         )
+    lines.append("")
 
-    report = "\n".join(lines) + "\n"
-    REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    REPORT_PATH.write_text(report)
-    print(f"\nReport written to {REPORT_PATH}")
+    def _stage_table(
+        title: str,
+        note: str,
+        pick: Callable[[RegisterResult], tuple[TimingStats, TimingStats]],
+    ) -> None:
+        lines.append(f"## {title}\n")
+        lines.append(f"{note}\n")
+        lines.append(
+            "| Register | Frames | pre mean (ms) | pre min (ms) | pre Mframes/s | pre MiB/s "
+            "| re mean (ms) | re Mframes/s | re MiB/s |"
+        )
+        lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+        for r in results:
+            pre, re = pick(r)
+            lines.append(
+                f"| {r.name} | {r.frames:,} | {_fmt_ms(pre.mean)} | {_fmt_ms(pre.min)} | "
+                f"{pre.mframes_per_s:.2f} | {pre.mib_per_s:,.0f} | "
+                f"{_fmt_ms(re.mean)} | {re.mframes_per_s:.2f} | {re.mib_per_s:,.0f} |"
+            )
+        lines.append("")
+
+    _stage_table(
+        "`load_register_dump` (core parse)",
+        "`pre` = parse a pre-read buffer; `re` = re-read the file from disk each run.",
+        lambda r: (r.load_preread, r.load_reread),
+    )
+    _stage_table(
+        "Full path to DataFrame (`load` + `decode` + `pd.DataFrame`, copy=False)",
+        "`pre` = parse a pre-read buffer; `re` = read file + parse each run.",
+        lambda r: (r.df_preread, r.df_reread),
+    )
+
+    lines.append("## `columns(decode=True)` (decode only)\n")
+    lines.append(
+        "Isolates the decode step: `load_register_dump` is called once up front, "
+        "then only `dump.columns(decode=True)` is timed. This is where masked field "
+        "extraction, bool casting, and multi-element expansion run. All operations "
+        "are vectorized numpy ops.\n"
+    )
+    lines.append(
+        "| Register | Frames | mean (ms) | min (ms) | stdev (ms) | Mframes/s | MiB/s |"
+    )
+    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+    for r in results:
+        s = r.to_columns
+        lines.append(
+            f"| {r.name} | {r.frames:,} | {_fmt_ms(s.mean)} | {_fmt_ms(s.min)} | "
+            f"{_fmt_ms(s.stdev)} | {s.mframes_per_s:.2f} | {s.mib_per_s:,.0f} |"
+        )
+    lines.append("")
+
+    lines.append("## Decomposition (pre-read means, ms)\n")
+    lines.append(
+        "`df_preread` ≈ `load_preread` (parse views) + `to_columns` (decode) + "
+        "pandas DataFrame construction. The residual column is "
+        "`df_preread − load_preread − to_columns`, i.e. the pandas/column-assembly "
+        "overhead. Note the three terms are timed in separate loops, so for "
+        "converter-dominated registers the residual is within noise and can even "
+        "go slightly negative.\n"
+    )
+    lines.append(
+        "| Register | load_preread | to_columns | df_preread | pandas residual |"
+    )
+    lines.append("| --- | ---: | ---: | ---: | ---: |")
+    for r in results:
+        residual = r.df_preread.mean - r.load_preread.mean - r.to_columns.mean
+        lines.append(
+            f"| {r.name} | {_fmt_ms(r.load_preread.mean)} | {_fmt_ms(r.to_columns.mean)} | "
+            f"{_fmt_ms(r.df_preread.mean)} | {_fmt_ms(residual)} |"
+        )
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def _use_utf8_console() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
 
 
 def main():
+    _use_utf8_console()
     parser = argparse.ArgumentParser(description="Run harp benchmarks.")
-    parser.add_argument("--runs", type=int, default=5)
-    parser.add_argument("--entries", type=int, default=1_000_000)
+    parser.add_argument(
+        "--runs", type=int, default=10, help="repeats per measurement (default: 10)"
+    )
+    parser.add_argument(
+        "--entries", type=int, default=1_000_000,
+        help="frames per corpus when generating (default: 1,000,000)",
+    )
     parser.add_argument("--only", nargs="*", default=None)
     parser.add_argument("--force", action="store_true")
-    parser.add_argument("--head", action="store_true", help="Only run first 3 registers.")
+    parser.add_argument(
+        "--head", action="store_true",
+        help="Only run first 3 registers.",
+    )
+    parser.add_argument("--report", type=Path, default=REPORT_PATH)
     args = parser.parse_args()
 
     registers = BENCHMARK_REGISTERS
@@ -157,30 +318,32 @@ def main():
     if args.head:
         registers = registers[:3]
 
-    print(f"Ensuring corpus ({args.entries:,} entries)...")
-    for reg in registers:
+    n = len(registers)
+    mode = "rebuilding" if args.force else "cache honored"
+    print(f"Preparing {n} corpus file(s) in {DATA_DIR} ({mode}, {args.entries:,} frames each):")
+    for i, reg in enumerate(registers, 1):
+        print(f"  [{i}/{n}] {reg.name:<24s} ", end="", flush=True)
         ensure_corpus(reg, args.entries, force=args.force)
+        print("done")
 
-    print(f"\nBenchmarking ({args.runs} runs)...")
-    all_results: dict[str, dict[str, dict[str, float]]] = {}
+    print(f"\nBenchmarking {n} register(s), {args.runs} runs each:")
+    results: list[RegisterResult] = []
 
-    for reg in registers:
-        print(f"  {reg.name}...")
-        result = _benchmark_register(reg, args.runs)
+    for i, reg in enumerate(registers, 1):
+        print(f"  [{i}/{n}] {reg.name:<24s} ", end="", flush=True)
+        result = benchmark_register(reg, runs=args.runs)
         if result is not None:
-            all_results[reg.name] = result
+            results.append(result)
+            print(
+                f"load={_fmt_ms(result.load_preread.mean):>8s}ms "
+                f"to_columns={_fmt_ms(result.to_columns.mean):>9s}ms "
+                f"df={_fmt_ms(result.df_preread.mean):>9s}ms"
+            )
 
-            meta = result["_meta"]
-            for stage in ("load_reread", "to_dataframe", "to_df_raw", "full_path"):
-                if stage in result:
-                    s = result[stage]
-                    print(
-                        f"    {stage:<16s}: "
-                        f"min={s['min']*1000:.2f}ms  "
-                        f"mean={s['mean']*1000:.2f}ms"
-                    )
-
-    _write_report(all_results, args.runs, args.entries)
+    args.report.parent.mkdir(parents=True, exist_ok=True)
+    report = build_report(results, runs=args.runs)
+    args.report.write_text(report, encoding="utf-8")
+    print(f"\nReport written to {args.report}")
 
 
 if __name__ == "__main__":
