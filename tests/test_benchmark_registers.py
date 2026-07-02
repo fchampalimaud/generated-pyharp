@@ -136,7 +136,6 @@ class TestComplexConfiguration:
             Frequency=1000.0,
             EventsEnabled=True,
             Delta=500,
-            Name="motor_01",
         )
         result = _roundtrip(ComplexConfiguration, payload)
         assert result.PwmPort == PwmPort.PWM2
@@ -146,7 +145,6 @@ class TestComplexConfiguration:
         assert result.EventsEnabled is True
         assert isinstance(result.EventsEnabled, bool)
         assert result.Delta == 500
-        assert result.Name == "motor_01"
 
     def test_bool_false(self):
         payload = ComplexConfigurationPayload(
@@ -155,24 +153,9 @@ class TestComplexConfiguration:
             Frequency=0.0,
             EventsEnabled=False,
             Delta=0,
-            Name="",
         )
         result = _roundtrip(ComplexConfiguration, payload)
         assert result.EventsEnabled is False
-        assert result.Name == ""
-
-    def test_string_max_length(self):
-        long_name = "a" * 33
-        payload = ComplexConfigurationPayload(
-            PwmPort=PwmPort.PWM1,
-            DutyCycle=0.5,
-            Frequency=500.0,
-            EventsEnabled=True,
-            Delta=100,
-            Name=long_name,
-        )
-        result = _roundtrip(ComplexConfiguration, payload)
-        assert result.Name == long_name
 
 
 class TestVersionPayload:

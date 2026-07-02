@@ -73,8 +73,8 @@ class AnalogData(RegisterBase[AnalogDataPayload]):
 
 
 # ---------------------------------------------------------------------------
-# 3. ComplexConfiguration — heterogeneous struct, U8 x 50, with gap,
-#    bool, enum, and string field (addr 34)
+# 3. ComplexConfiguration — heterogeneous struct, U8 x 17, with gap,
+#    bool, and enum field (addr 34)
 # ---------------------------------------------------------------------------
 
 
@@ -86,7 +86,6 @@ class ComplexConfigurationPayload(StructPayload):
     Frequency: float = payload_field(PayloadType.FLOAT, offset=8)
     EventsEnabled: bool = payload_field(PayloadType.U8, offset=12, interface_type=bool)
     Delta: int = payload_field(PayloadType.U32, offset=13)
-    Name: str = payload_field(PayloadType.U8, offset=17, length=33, interface_type=str)
 
 
 class ComplexConfiguration(RegisterBase[ComplexConfigurationPayload]):

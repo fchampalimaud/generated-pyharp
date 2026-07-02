@@ -62,7 +62,6 @@ BENCHMARK_REGISTERS: list[BenchmarkedRegister] = [
             Frequency=1000.0,
             EventsEnabled=True,
             Delta=500,
-            Name="motor_01",
         ),
     ),
     BenchmarkedRegister(

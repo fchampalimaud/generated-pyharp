@@ -184,14 +184,6 @@ class TestMultiElementPlainArray:
 
 
 class TestStringField:
-    def test_complex_config_string(self, corpus_dir):
-        reg = _get_reg("ComplexConfiguration")
-        dump = _generate_and_load(reg, corpus_dir)
-        cols = dump.columns(decode=True)
-
-        assert "Name" in cols
-        assert cols["Name"].ndim == 1
-
     def test_version_tag_string(self, corpus_dir):
         reg = _get_reg("Version")
         dump = _generate_and_load(reg, corpus_dir)
