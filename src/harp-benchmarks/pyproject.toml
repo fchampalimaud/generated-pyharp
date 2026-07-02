@@ -1,0 +1,30 @@
+[project]
+name = "harp-benchmarks"
+version = "0.1.0"
+description = "Benchmark suite for harp-protocol and harp-data."
+authors = [{ name= "Hardware and Software Platform, Champalimaud Foundation", email="software@research.fchampalimaud.org"}]
+license = "MIT"
+classifiers = ["Private :: Do Not Upload"]
+requires-python = ">=3.11,<4.0"
+dependencies = [
+    "harp-protocol==0.4.0",
+    "harp-data==0.4.0",
+    "numpy>=2.2.6",
+    "pandas>=3.0.3",
+]
+
+[project.scripts]
+harp-benchmark = "harp.benchmarks.benchmark:main"
+harp-benchmark-generate = "harp.benchmarks.generate:main"
+
+[tool.uv.sources]
+harp-protocol = { workspace = true }
+harp-data = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.9.5,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "harp.benchmarks"
+module-root = ""

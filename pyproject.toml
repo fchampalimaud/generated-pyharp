@@ -23,6 +23,7 @@ Documentation = "https://fchampalimaud.github.io/pyharp/"
 harp-protocol = { workspace = true }
 harp-serial = { workspace = true }
 harp-data = { workspace = true }
+harp-benchmarks = { workspace = true }
 
 [tool.uv.workspace]
 members = [
@@ -43,6 +44,7 @@ docs = [
 ]
 
 dev = [
+    "harp-benchmarks",
     "pytest>=8.3.5",
     "pytest-cov>=6.1.1",
     "ruff>=0.11.0",
