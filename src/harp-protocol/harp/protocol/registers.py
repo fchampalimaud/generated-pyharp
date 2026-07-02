@@ -363,6 +363,12 @@ class RegisterBase(Generic[T]):
             ):
                 cls.decode = staticmethod(lambda v, c=payload_cls: c(v))
                 cls.encode = cls.encode or staticmethod(lambda v: int(v))
+            elif hasattr(payload_cls, "__harp_decode__"):
+                cls.decode = payload_cls.__harp_decode__
+                if cls.encode is None and hasattr(payload_cls, "__harp_encode__"):
+                    cls.encode = staticmethod(
+                        lambda v: v.__harp_encode__()
+                    )
 
         if cls.payload_type is None:
             raise TypeError(f"{cls.__name__}: payload_type is required")
