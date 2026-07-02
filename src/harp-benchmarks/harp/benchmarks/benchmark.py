@@ -41,36 +41,42 @@ def _benchmark_register(
     times = timeit.Timer(load_reread).repeat(runs, 1)
     results["load_reread"] = _summarize(times)
 
-    # -- columns -> DataFrame --
+    # -- columns -> DataFrame (decoded) --
     dump = load_reread()
     n_frames = len(dump)
     actual_frame_size = file_size / n_frames if n_frames else 0
 
     def columns_to_df():
-        data = dump.columns(include_timestamp=True, timestamp="float")
+        data = dump.columns(include_timestamp=True, timestamp="float", decode=True)
+        return pd.DataFrame(data, copy=False)
+
+    timeit.Timer(columns_to_df).timeit(1)
+    times = timeit.Timer(columns_to_df).repeat(runs, 1)
+    results["to_dataframe"] = _summarize(times)
+
+    # -- columns -> DataFrame (raw, no decode) --
+    def columns_to_df_raw():
+        data = dump.columns(include_timestamp=True, timestamp="float", decode=False)
         return pd.DataFrame(data, copy=False)
 
     try:
-        timeit.Timer(columns_to_df).timeit(1)
-        times = timeit.Timer(columns_to_df).repeat(runs, 1)
-        results["to_dataframe"] = _summarize(times)
+        timeit.Timer(columns_to_df_raw).timeit(1)
+        times = timeit.Timer(columns_to_df_raw).repeat(runs, 1)
+        results["to_df_raw"] = _summarize(times)
     except ValueError:
-        print(f"    to_dataframe   : skipped (multi-dim columns)")
+        pass
 
-    # -- full path: load + DataFrame --
+    # -- full path: load + decoded DataFrame --
     def full_path():
         d = load_register_dump(
             path, register_cls, payload_type, validation=ValidationMode.HEADER
         )
-        data = d.columns(include_timestamp=True, timestamp="float")
+        data = d.columns(include_timestamp=True, timestamp="float", decode=True)
         return pd.DataFrame(data, copy=False)
 
-    try:
-        timeit.Timer(full_path).timeit(1)
-        times = timeit.Timer(full_path).repeat(runs, 1)
-        results["full_path"] = _summarize(times)
-    except ValueError:
-        pass
+    timeit.Timer(full_path).timeit(1)
+    times = timeit.Timer(full_path).repeat(runs, 1)
+    results["full_path"] = _summarize(times)
 
     results["_meta"] = {
         "frames": float(n_frames),
@@ -122,7 +128,7 @@ def _write_report(
 
     for name, results in all_results.items():
         meta = results["_meta"]
-        for stage in ("load_reread", "to_dataframe", "full_path"):
+        for stage in ("load_reread", "to_dataframe", "to_df_raw", "full_path"):
             if stage in results:
                 lines.append(_format_row(name, stage, results[stage], meta))
         lines.append(
@@ -165,7 +171,7 @@ def main():
             all_results[reg.name] = result
 
             meta = result["_meta"]
-            for stage in ("load_reread", "to_dataframe", "full_path"):
+            for stage in ("load_reread", "to_dataframe", "to_df_raw", "full_path"):
                 if stage in result:
                     s = result[stage]
                     print(

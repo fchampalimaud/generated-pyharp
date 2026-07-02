@@ -111,6 +111,7 @@ class RegisterDump:
     payload_matrix: np.ndarray
     field_names: tuple[str, ...]
     timestamp: TimestampView | None
+    payload_struct: tuple[StructField, ...] | None = None
     _column_cache: dict[str, np.ndarray] = field(default_factory=dict, repr=False)
     _raw_2d: np.ndarray | None = field(default=None, repr=False)
 
@@ -174,8 +175,10 @@ class RegisterDump:
         return self.payload_matrix[:, index]
 
     def payload_columns(
-        self, *, prefix: str = "value", copy: bool = True
+        self, *, prefix: str = "value", copy: bool = True, decode: bool = False
     ) -> dict[str, np.ndarray]:
+        if decode and self.payload_struct is not None:
+            return self._decoded_payload_columns(copy=copy)
         names = self.column_names(prefix=prefix)
         if self.payload_matrix.dtype.names is not None and not self._column_cache:
             self._bulk_extract_columns()
@@ -208,6 +211,60 @@ class RegisterDump:
         chunk_entries = max(1, (8 * 1024 * 1024) // frame_size)
         _threaded_extract(raw, field_specs, chunk_entries, n)
 
+    def _decoded_payload_columns(self, *, copy: bool) -> dict[str, np.ndarray]:
+        if not self._column_cache:
+            if self.payload_matrix.dtype.names is not None:
+                self._bulk_extract_columns()
+            else:
+                names = self.column_names()
+                for i, name in enumerate(names):
+                    self._column_cache[name] = self.payload_matrix[:, i]
+
+        result: dict[str, np.ndarray] = {}
+        for f in self.payload_struct:
+            raw = self._column_cache[f.name]
+
+            if f.is_string:
+                result[f.name] = raw.copy() if copy else raw
+
+            elif f.length is not None:
+                n_elements = f.length // f.type.type_size()
+                if f.interface_type is not None and hasattr(f.interface_type, "_fields"):
+                    suffixes = f.interface_type._fields
+                else:
+                    suffixes = [str(i) for i in range(n_elements)]
+                for i, suffix in enumerate(suffixes):
+                    col = raw[:, i]
+                    result[f"{f.name}_{suffix}"] = col.copy() if copy else col
+
+            elif f.mask is not None:
+                decoded = (raw & f.mask) >> f.shift
+                if f.interface_type is bool:
+                    decoded = decoded.astype(np.bool_)
+                result[f.name] = decoded
+
+            elif f.interface_type is bool:
+                result[f.name] = raw.astype(np.bool_)
+
+            else:
+                result[f.name] = raw.copy() if copy else raw
+
+        return result
+
+    def decoded_column_names(self) -> tuple[str, ...]:
+        if self.payload_struct is None:
+            return self.column_names()
+        names: list[str] = []
+        for f in self.payload_struct:
+            if f.is_string or f.length is None:
+                names.append(f.name)
+            elif f.interface_type is not None and hasattr(f.interface_type, "_fields"):
+                names.extend(f"{f.name}_{s}" for s in f.interface_type._fields)
+            else:
+                n = f.length // f.type.type_size()
+                names.extend(f"{f.name}_{i}" for i in range(n))
+        return tuple(names)
+
     def timestamp_values(
         self,
         mode: Literal["float", "ns", "timedelta64[ns]"] = "ns",
@@ -231,8 +288,9 @@ class RegisterDump:
         timestamp: TimestampMode = "parts",
         prefix: str = "value",
         copy: bool = True,
+        decode: bool = False,
     ) -> dict[str, np.ndarray]:
-        columns = self.payload_columns(prefix=prefix, copy=copy)
+        columns = self.payload_columns(prefix=prefix, copy=copy, decode=decode)
 
         if not include_timestamp:
             return columns
@@ -554,6 +612,7 @@ def load_register_dump(
             )
             if actual_payload_type.has_timestamp()
             else None,
+            payload_struct=register_cls.payload_struct,
         )
 
     raw_flat = np.fromfile(path, dtype=np.uint8, count=complete_frames * frame_size)
@@ -592,6 +651,7 @@ def load_register_dump(
         payload_matrix=payload_matrix,
         field_names=field_names,
         timestamp=timestamp,
+        payload_struct=register_cls.payload_struct,
         _raw_2d=raw_2d,
     )
 
