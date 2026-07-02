@@ -494,18 +494,15 @@ def coerce_validation_mode(value: ValidationMode | str) -> ValidationMode:
         ) from exc
 
 
-def validate_dump_header(
-    path: Path,
+def _validate_header_bytes(
+    header: bytes,
     register_cls: type[RegisterBase[T]],
     payload_type: PayloadType,
 ) -> int:
-    with path.open("rb") as stream:
-        header = stream.read(5)
-
     if len(header) < 5:
-        raise ValueError("File is too small to contain a Harp frame header.")
+        raise ValueError("Data is too small to contain a Harp frame header.")
 
-    _, length, address, _, payload_type_raw = header
+    _, length, address, _, payload_type_raw = header[:5]
 
     if address != register_cls.address:
         raise ValueError(f"Expected register {register_cls.address}, found register {address}.")
@@ -527,6 +524,16 @@ def validate_dump_header(
         )
 
     return expected_length
+
+
+def validate_dump_header(
+    path: Path,
+    register_cls: type[RegisterBase[T]],
+    payload_type: PayloadType,
+) -> int:
+    with path.open("rb") as stream:
+        header = stream.read(5)
+    return _validate_header_bytes(header, register_cls, payload_type)
 
 
 def validate_dump_records(
@@ -556,41 +563,17 @@ def validate_checksums(records: np.ndarray, frame_dtype: np.dtype) -> None:
         )
 
 
-def load_register_dump(
-    path: str | PathLike[str],
+def _build_dump(
+    raw_flat: np.ndarray,
     register_cls: type[RegisterBase[T]],
-    payload_type: PayloadType | None = None,
-    *,
-    timestamped: bool = True,
-    validation: ValidationMode | str = ValidationMode.ALL,
+    actual_payload_type: PayloadType,
+    frame_dtype: np.dtype,
+    validation_mode: ValidationMode,
+    expected_length: int,
 ) -> RegisterDump:
-    path = Path(path)
-    validation_mode = coerce_validation_mode(validation)
-
-    actual_payload_type = resolve_dump_payload_type(
-        register_cls,
-        payload_type,
-        timestamped=timestamped,
-    )
-    expected_length = validate_dump_header(path, register_cls, actual_payload_type)
-    frame_dtype = build_frame_dtype(register_cls, actual_payload_type)
-
-    file_size = path.stat().st_size
-    frame_size = frame_dtype.itemsize
-    remainder = file_size % frame_size
-    complete_frames = file_size // frame_size
-
-    if remainder:
-        import warnings
-
-        warnings.warn(
-            f"File size {file_size} is not a multiple of frame size "
-            f"{frame_size}; last {remainder} bytes will be ignored "
-            f"(truncated frame). Loading {complete_frames:,} complete frames.",
-            stacklevel=2,
-        )
-
     field_names = register_field_names(register_cls)
+    frame_size = frame_dtype.itemsize
+    complete_frames = len(raw_flat) // frame_size
 
     if complete_frames == 0:
         records = np.empty(0, dtype=frame_dtype)
@@ -615,25 +598,22 @@ def load_register_dump(
             payload_struct=register_cls.payload_struct,
         )
 
-    raw_flat = np.fromfile(path, dtype=np.uint8, count=complete_frames * frame_size)
-    records = raw_flat.view(frame_dtype)
-    raw_2d = raw_flat.reshape(complete_frames, frame_size) if register_cls.payload_struct is not None else None
+    records = raw_flat[: complete_frames * frame_size].view(frame_dtype)
+    raw_2d = (
+        raw_flat[: complete_frames * frame_size].reshape(complete_frames, frame_size)
+        if register_cls.payload_struct is not None
+        else None
+    )
 
-    if validation_mode is ValidationMode.ALL:
+    if validation_mode in (ValidationMode.ALL, ValidationMode.CHECKSUM):
         validate_dump_records(
             records,
             register_cls,
             actual_payload_type,
             expected_length,
         )
-    elif validation_mode is ValidationMode.CHECKSUM:
-        validate_dump_records(
-            records,
-            register_cls,
-            actual_payload_type,
-            expected_length,
-        )
-        validate_checksums(records, frame_dtype)
+        if validation_mode is ValidationMode.CHECKSUM:
+            validate_checksums(records, frame_dtype)
 
     payload_matrix = records["payload"]
     if payload_matrix.ndim == 1 and register_cls.payload_struct is None:
@@ -653,6 +633,71 @@ def load_register_dump(
         timestamp=timestamp,
         payload_struct=register_cls.payload_struct,
         _raw_2d=raw_2d,
+    )
+
+
+def load_register_dump(
+    source: str | PathLike[str] | bytes | bytearray | memoryview,
+    register_cls: type[RegisterBase[T]],
+    payload_type: PayloadType | None = None,
+    *,
+    timestamped: bool = True,
+    validation: ValidationMode | str = ValidationMode.ALL,
+) -> RegisterDump:
+    validation_mode = coerce_validation_mode(validation)
+
+    actual_payload_type = resolve_dump_payload_type(
+        register_cls,
+        payload_type,
+        timestamped=timestamped,
+    )
+    frame_dtype = build_frame_dtype(register_cls, actual_payload_type)
+    frame_size = frame_dtype.itemsize
+
+    if isinstance(source, (bytes, bytearray, memoryview)):
+        data = bytes(source) if isinstance(source, memoryview) else source
+        expected_length = _validate_header_bytes(data, register_cls, actual_payload_type)
+        data_size = len(data)
+        remainder = data_size % frame_size
+        complete_frames = data_size // frame_size
+
+        if remainder:
+            import warnings
+
+            warnings.warn(
+                f"Buffer size {data_size} is not a multiple of frame size "
+                f"{frame_size}; last {remainder} bytes will be ignored "
+                f"(truncated frame). Loading {complete_frames:,} complete frames.",
+                stacklevel=2,
+            )
+
+        raw_flat = np.frombuffer(data, dtype=np.uint8, count=complete_frames * frame_size).copy()
+        return _build_dump(
+            raw_flat, register_cls, actual_payload_type,
+            frame_dtype, validation_mode, expected_length,
+        )
+
+    path = Path(source)
+    expected_length = validate_dump_header(path, register_cls, actual_payload_type)
+
+    file_size = path.stat().st_size
+    remainder = file_size % frame_size
+    complete_frames = file_size // frame_size
+
+    if remainder:
+        import warnings
+
+        warnings.warn(
+            f"File size {file_size} is not a multiple of frame size "
+            f"{frame_size}; last {remainder} bytes will be ignored "
+            f"(truncated frame). Loading {complete_frames:,} complete frames.",
+            stacklevel=2,
+        )
+
+    raw_flat = np.fromfile(path, dtype=np.uint8, count=complete_frames * frame_size)
+    return _build_dump(
+        raw_flat, register_cls, actual_payload_type,
+        frame_dtype, validation_mode, expected_length,
     )
 
 
