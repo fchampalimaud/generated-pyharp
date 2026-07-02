@@ -134,7 +134,7 @@ COMPLEX_CONFIG_STRUCT = (
     StructField("frequency", PayloadType.FLOAT, offset=8),
     StructField("events_enabled", PayloadType.U8, offset=12),
     StructField("delta", PayloadType.U32, offset=13),
-    StructField("name", PayloadType.U8, offset=17, length=33, is_string=True),
+    StructField("name", PayloadType.U8, offset=17, length=33, interface_type=str),
 )
 COMPLEX_CONFIG_PAYLOAD_SIZE = 50
 COMPLEX_CONFIG_ADDRESS = 34

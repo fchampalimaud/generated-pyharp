@@ -30,7 +30,7 @@ class ComplexConfigPayload(StructPayload):
     frequency: float = payload_field(PayloadType.FLOAT, offset=8)
     events_enabled: bool = payload_field(PayloadType.U8, offset=12)
     delta: int = payload_field(PayloadType.U32, offset=13)
-    name: str = payload_field(PayloadType.U8, offset=17, length=33, is_string=True)
+    name: str = payload_field(PayloadType.U8, offset=17, length=33, interface_type=str)
 
 
 class ComplexConfiguration(RegisterBase[ComplexConfigPayload]):

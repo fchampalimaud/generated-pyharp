@@ -63,7 +63,7 @@ class ComplexConfigPayload(StructPayload):
     frequency: float = payload_field(PayloadType.FLOAT, offset=8)
     events_enabled: bool = payload_field(PayloadType.U8, offset=12)
     delta: int = payload_field(PayloadType.U32, offset=13)
-    name: str = payload_field(PayloadType.U8, offset=17, length=33, is_string=True)
+    name: str = payload_field(PayloadType.U8, offset=17, length=33, interface_type=str)
 
 
 class ComplexConfiguration(RegisterBase[ComplexConfigPayload]):
@@ -83,10 +83,10 @@ class PwmPort(IntEnum):
 class StartPulseTrainPayload(StructPayload):
     pulse_width: int = payload_field(PayloadType.U16, offset=0, mask=0x03FF)
     digital_output: PwmPort = payload_field(
-        PayloadType.U16, offset=0, mask=0x0C00, type=PwmPort
+        PayloadType.U16, offset=0, mask=0x0C00, interface_type=PwmPort
     )
-    pulse_count: int = payload_field(PayloadType.U16, offset=2, mask=0x00FF, type=int)
-    frequency: int = payload_field(PayloadType.U16, offset=2, mask=0xFF00, type=int)
+    pulse_count: int = payload_field(PayloadType.U16, offset=2, mask=0x00FF, interface_type=int)
+    frequency: int = payload_field(PayloadType.U16, offset=2, mask=0xFF00, interface_type=int)
 
 
 class StartPulseTrain(RegisterBase[StartPulseTrainPayload]):

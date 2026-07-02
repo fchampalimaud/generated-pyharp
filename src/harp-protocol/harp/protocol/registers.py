@@ -65,9 +65,12 @@ class StructField:
     type: PayloadType
     offset: int
     length: int | None = None
-    is_string: bool = False
     mask: int | None = None
-    mask_type: type | None = None
+    interface_type: type | None = None
+
+    @property
+    def is_string(self) -> bool:
+        return self.interface_type is str
 
     @property
     def byte_size(self) -> int:
@@ -87,18 +90,16 @@ def payload_field(
     offset: int,
     *,
     length: int | None = None,
-    is_string: bool = False,
     mask: int | None = None,
-    type: type | None = None,
+    interface_type: type | None = None,
 ) -> Any:
     return StructField(
         name="",
         type=payload_type,
         offset=offset,
         length=length,
-        is_string=is_string,
         mask=mask,
-        mask_type=type,
+        interface_type=interface_type,
     )
 
 
@@ -123,9 +124,8 @@ class StructPayload:
                     type=sf.type,
                     offset=sf.offset,
                     length=sf.length,
-                    is_string=sf.is_string,
                     mask=sf.mask,
-                    mask_type=sf.mask_type,
+                    interface_type=sf.interface_type,
                 )
                 for name, sf in inline
             )
@@ -156,15 +156,17 @@ class StructPayload:
                 )
             elif f.length is not None:
                 n = f.length // f.type.type_size()
-                kwargs[f.name] = list(
-                    struct.unpack_from(f"<{n}{STRUCT_CHARS[f.type]}", data, f.offset)
-                )
+                values = struct.unpack_from(f"<{n}{STRUCT_CHARS[f.type]}", data, f.offset)
+                if f.interface_type is not None:
+                    kwargs[f.name] = f.interface_type(*values)
+                else:
+                    kwargs[f.name] = list(values)
             else:
                 val = f._struct.unpack_from(data, f.offset)[0]
                 if f.mask is not None:
                     val = (val & f.mask) >> f.shift
-                    if f.mask_type is not None:
-                        val = bool(val) if f.mask_type is bool else f.mask_type(val)
+                if f.interface_type is not None and f.interface_type is not int:
+                    val = bool(val) if f.interface_type is bool else f.interface_type(val)
                 kwargs[f.name] = val
         return cls(**kwargs)
 
@@ -176,13 +178,17 @@ class StructPayload:
             idx = f.offset // ts
             if f.length is not None:
                 n = f.length // ts
-                kwargs[f.name] = list(raw_payload[idx : idx + n])
+                values = raw_payload[idx : idx + n]
+                if f.interface_type is not None:
+                    kwargs[f.name] = f.interface_type(*values)
+                else:
+                    kwargs[f.name] = list(values)
             else:
                 val = raw_payload[idx]
                 if f.mask is not None:
                     val = (val & f.mask) >> f.shift
-                    if f.mask_type is not None:
-                        val = bool(val) if f.mask_type is bool else f.mask_type(val)
+                if f.interface_type is not None and f.interface_type is not int:
+                    val = bool(val) if f.interface_type is bool else f.interface_type(val)
                 kwargs[f.name] = val
         return cls(**kwargs)
 

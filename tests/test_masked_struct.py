@@ -28,7 +28,7 @@ class PwmPort(IntEnum):
 class StartPulsePayload(StructPayload):
     pulse_width: int = payload_field(PayloadType.U16, offset=0, mask=0x03FF)
     digital_output: PwmPort = payload_field(
-        PayloadType.U16, offset=0, mask=0x0C00, type=PwmPort
+        PayloadType.U16, offset=0, mask=0x0C00, interface_type=PwmPort
     )
 
 
@@ -85,10 +85,10 @@ class TestOverlappingMasksSingleWord:
 class StartPulseTrainPayload(StructPayload):
     pulse_width: int = payload_field(PayloadType.U16, offset=0, mask=0x03FF)
     digital_output: PwmPort = payload_field(
-        PayloadType.U16, offset=0, mask=0x0C00, type=PwmPort
+        PayloadType.U16, offset=0, mask=0x0C00, interface_type=PwmPort
     )
-    pulse_count: int = payload_field(PayloadType.U16, offset=2, mask=0x00FF, type=int)
-    frequency: int = payload_field(PayloadType.U16, offset=2, mask=0xFF00, type=int)
+    pulse_count: int = payload_field(PayloadType.U16, offset=2, mask=0x00FF, interface_type=int)
+    frequency: int = payload_field(PayloadType.U16, offset=2, mask=0xFF00, interface_type=int)
 
 
 class StartPulseTrain(RegisterBase[StartPulseTrainPayload]):
@@ -167,9 +167,9 @@ class TestMultiWordMaskedStruct:
 
 @dataclass
 class StatusPayload(StructPayload):
-    value: int = payload_field(PayloadType.U16, offset=0, mask=0x0FFF, type=int)
-    overflow: bool = payload_field(PayloadType.U16, offset=0, mask=0x1000, type=bool)
-    valid: bool = payload_field(PayloadType.U16, offset=0, mask=0x2000, type=bool)
+    value: int = payload_field(PayloadType.U16, offset=0, mask=0x0FFF, interface_type=int)
+    overflow: bool = payload_field(PayloadType.U16, offset=0, mask=0x1000, interface_type=bool)
+    valid: bool = payload_field(PayloadType.U16, offset=0, mask=0x2000, interface_type=bool)
 
 
 class StatusReg(RegisterBase[StatusPayload]):
@@ -221,8 +221,8 @@ class TestBoolMaskField:
 @dataclass
 class MixedPayload(StructPayload):
     channel: int = payload_field(PayloadType.U8, offset=0)
-    mode: PwmPort = payload_field(PayloadType.U8, offset=1, mask=0x03, type=PwmPort)
-    enabled: bool = payload_field(PayloadType.U8, offset=1, mask=0x80, type=bool)
+    mode: PwmPort = payload_field(PayloadType.U8, offset=1, mask=0x03, interface_type=PwmPort)
+    enabled: bool = payload_field(PayloadType.U8, offset=1, mask=0x80, interface_type=bool)
     gain: float = payload_field(PayloadType.FLOAT, offset=4)
 
 
@@ -263,8 +263,8 @@ class TestMixedMaskedAndPlain:
 
 @dataclass
 class NibbleSplitStructPayload(StructPayload):
-    low: int = payload_field(PayloadType.U8, offset=0, mask=0x0F, type=int)
-    high: int = payload_field(PayloadType.U8, offset=0, mask=0xF0, type=int)
+    low: int = payload_field(PayloadType.U8, offset=0, mask=0x0F, interface_type=int)
+    high: int = payload_field(PayloadType.U8, offset=0, mask=0xF0, interface_type=int)
 
 
 class NibbleSplitStructReg(RegisterBase[NibbleSplitStructPayload]):
