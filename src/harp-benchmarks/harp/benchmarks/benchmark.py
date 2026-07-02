@@ -126,9 +126,7 @@ def benchmark_register(
     )
 
     to_columns = _time(
-        lambda: dump.columns(
-            include_timestamp=True, timestamp="float", decode=True
-        ),
+        lambda: dump.payload_columns(decode=True, copy=False),
         runs=runs,
         frames=frames,
         file_bytes=file_bytes,
